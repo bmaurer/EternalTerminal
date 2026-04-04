@@ -13,14 +13,19 @@ TerminalClient::TerminalClient(
     const string& passkey, shared_ptr<Console> _console, bool jumphost,
     const string& tunnels, const string& reverseTunnels, bool forwardSshAgent,
     const string& identityAgent, int _keepaliveDuration,
-    const vector<pair<string, string>>& envVars)
+    const vector<pair<string, string>>& envVars,
+    WriteBufferMode _flowControlMode)
     : console(_console),
       shuttingDown(false),
-      keepaliveDuration(_keepaliveDuration) {
+      keepaliveDuration(_keepaliveDuration),
+      flowControlMode(_flowControlMode) {
   portForwardHandler = shared_ptr<PortForwardHandler>(
       new PortForwardHandler(_socketHandler, _pipeSocketHandler));
   InitialPayload payload;
   payload.set_jumphost(jumphost);
+  payload.set_flow_control_mode(flowControlMode == WriteBufferMode::DISCARD
+                                    ? et::FLOW_CONTROL_DISCARD
+                                    : et::FLOW_CONTROL_BACKPRESSURE);
 
   for (const auto& envVar : envVars) {
     (*payload.mutable_environmentvariables())[envVar.first] = envVar.second;
@@ -175,8 +180,7 @@ void TerminalClient::run(const string& command, const bool noexit) {
   TerminalInfo lastTerminalInfo;
 
   // Flow control: buffer for pending console output
-  // This creates backpressure when the console is slow to consume data
-  WriteBuffer consoleOutputBuffer;
+  WriteBuffer consoleOutputBuffer(flowControlMode);
 
   if (!console.get()) {
     // NOTE: ../../scripts/ssh-et relies on the wording of this message, so if

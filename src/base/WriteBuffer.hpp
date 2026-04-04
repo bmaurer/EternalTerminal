@@ -4,25 +4,39 @@
 #include "Headers.hpp"
 
 namespace et {
+
+enum class WriteBufferMode {
+  BACKPRESSURE,  // Stop accepting data when buffer is full
+  DISCARD        // Drop oldest data when buffer is full
+};
+
 /**
  * @brief Bounded buffer for pending write data, enabling flow control.
  *
- * This buffer is used to queue outgoing data when the socket is not ready
- * to accept writes. By limiting the buffer size, we create natural
- * backpressure that propagates upstream when the consumer is slow.
+ * Supports two modes:
+ * - BACKPRESSURE: canAcceptMore() returns false when full, causing callers
+ *   to stop reading from the source. Processes stall when consumer is slow.
+ * - DISCARD: canAcceptMore() always returns true. When the buffer exceeds
+ *   MAX_BUFFER_SIZE, oldest data is dropped. Processes never stall.
  */
 class WriteBuffer {
  public:
-  /** @brief Maximum bytes to buffer before applying backpressure. */
+  /** @brief Maximum bytes to buffer before applying backpressure or discarding.
+   */
   static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB
 
-  WriteBuffer() : totalBytes(0), writeOffset(0) {}
+  explicit WriteBuffer(WriteBufferMode mode = WriteBufferMode::BACKPRESSURE)
+      : mode(mode), totalBytes(0), writeOffset(0) {}
 
   /**
    * @brief Returns true if the buffer has room for more data.
-   * When false, the caller should stop reading from the source.
+   * In BACKPRESSURE mode, returns false when buffer >= MAX_BUFFER_SIZE.
+   * In DISCARD mode, always returns true (old data will be dropped).
    */
-  bool canAcceptMore() const { return totalBytes < MAX_BUFFER_SIZE; }
+  bool canAcceptMore() const {
+    if (mode == WriteBufferMode::DISCARD) return true;
+    return totalBytes < MAX_BUFFER_SIZE;
+  }
 
   /**
    * @brief Returns true if there is data waiting to be written.
@@ -35,13 +49,24 @@ class WriteBuffer {
   size_t size() const { return totalBytes; }
 
   /**
+   * @brief Returns the buffer mode.
+   */
+  WriteBufferMode getMode() const { return mode; }
+
+  /**
    * @brief Adds data to the end of the buffer.
+   * In DISCARD mode, drops oldest chunks if the buffer would exceed
+   * MAX_BUFFER_SIZE.
    * @param data The data to enqueue.
    */
-  void enqueue(const string &data) {
+  void enqueue(const string& data) {
     if (data.empty()) return;
     pending.push_back(data);
     totalBytes += data.size();
+
+    if (mode == WriteBufferMode::DISCARD) {
+      discardOldest();
+    }
   }
 
   /**
@@ -49,12 +74,12 @@ class WriteBuffer {
    * @param count Output: number of bytes available for writing.
    * @return Pointer to the data, or nullptr if buffer is empty.
    */
-  const char *peekData(size_t *count) const {
+  const char* peekData(size_t* count) const {
     if (pending.empty()) {
       *count = 0;
       return nullptr;
     }
-    const string &front = pending.front();
+    const string& front = pending.front();
     *count = front.size() - writeOffset;
     return front.data() + writeOffset;
   }
@@ -67,7 +92,7 @@ class WriteBuffer {
     if (bytesWritten == 0) return;
 
     while (bytesWritten > 0 && !pending.empty()) {
-      string &front = pending.front();
+      string& front = pending.front();
       size_t available = front.size() - writeOffset;
 
       if (bytesWritten >= available) {
@@ -95,6 +120,21 @@ class WriteBuffer {
   }
 
  private:
+  /**
+   * @brief Drops oldest chunks until buffer is within MAX_BUFFER_SIZE.
+   * Only called in DISCARD mode after enqueue.
+   */
+  void discardOldest() {
+    while (totalBytes > MAX_BUFFER_SIZE && !pending.empty()) {
+      string& front = pending.front();
+      size_t frontSize = front.size() - writeOffset;
+      totalBytes -= frontSize;
+      writeOffset = 0;
+      pending.pop_front();
+    }
+  }
+
+  WriteBufferMode mode;
   std::deque<string> pending;
   size_t totalBytes;
   size_t writeOffset;  // Offset into the front chunk for partial writes

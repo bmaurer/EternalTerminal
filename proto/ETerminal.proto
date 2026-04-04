@@ -57,10 +57,16 @@ message PortForwardData {
   optional bool closed = 5;
 }
 
+enum FlowControlMode {
+  FLOW_CONTROL_BACKPRESSURE = 0;
+  FLOW_CONTROL_DISCARD = 1;
+}
+
 message InitialPayload {
   optional bool jumphost = 1 [default = false];
   repeated PortForwardSourceRequest reversetunnels = 2;
   map<string, string> environmentvariables = 3;
+  optional FlowControlMode flow_control_mode = 4 [default = FLOW_CONTROL_DISCARD];
 }
 
 message InitialResponse {

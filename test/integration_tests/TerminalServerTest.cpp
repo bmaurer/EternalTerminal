@@ -10,6 +10,7 @@
 #include "TunnelUtils.hpp"
 #include "UserJumphostHandler.hpp"
 #include "UserTerminalHandler.hpp"
+#include "WriteBuffer.hpp"
 
 namespace et {
 
@@ -579,6 +580,132 @@ TEST_CASE_METHOD(ServerEndToEndTestFixture, "BackpressureTest",
   REQUIRE(receivedData.size() == dataSize);
   REQUIRE(receivedData == testData);
   REQUIRE(sendComplete.load() == true);
+
+  terminalClient->shutdown();
+  terminalClientThread.join();
+  terminalClient.reset();
+
+  sshSetupHandler->shutdownHandler();
+}
+
+// Test that in discard mode, data flows through and some data may be lost
+// when the producer is faster than the consumer.
+TEST_CASE_METHOD(ServerEndToEndTestFixture, "DiscardModeTest",
+                 "[DiscardModeTest][integration]") {
+  auto [id, passkey] = sshSetupHandler->SetupSsh(
+      "", "localhost", "localhost", 2022, "", "", false, 0, "", "", {});
+
+  sleep(1);
+
+  shared_ptr<TerminalClient> terminalClient(new TerminalClient(
+      clientSocketHandler, clientPipeSocketHandler, serverEndpoint, id, passkey,
+      fakeConsole, false, "", "", false, "", MAX_CLIENT_KEEP_ALIVE_DURATION, {},
+      WriteBufferMode::DISCARD));
+  thread terminalClientThread(
+      [terminalClient]() { terminalClient->run("", false); });
+  sleep(3);
+
+  // Generate 512KB of data (larger than 256KB buffer limit)
+  const size_t dataSize = 512 * 1024;
+  string testData(dataSize, '\0');
+  for (size_t i = 0; i < dataSize; i++) {
+    testData[i] = 'A' + (i % 26);
+  }
+
+  // Start a reader thread that continuously drains console output.
+  // This prevents the TerminalClient from blocking in console->write().
+  atomic<bool> stopReading{false};
+  string receivedData;
+  mutex receivedMutex;
+  thread readerThread([this, &stopReading, &receivedData, &receivedMutex]() {
+    while (!stopReading.load()) {
+      try {
+        string chunk = fakeConsole->getTerminalData(1024);
+        lock_guard<mutex> lock(receivedMutex);
+        receivedData.append(chunk);
+      } catch (...) {
+        break;
+      }
+    }
+  });
+
+  // Send all data from terminal side
+  auto startTime = chrono::steady_clock::now();
+  const size_t chunkSize = 4096;
+  for (size_t offset = 0; offset < testData.size(); offset += chunkSize) {
+    size_t remaining = min(chunkSize, testData.size() - offset);
+    fakeUserTerminal->simulateTerminalResponse(
+        testData.substr(offset, remaining));
+  }
+  auto endTime = chrono::steady_clock::now();
+
+  auto durationMs =
+      chrono::duration_cast<chrono::milliseconds>(endTime - startTime).count();
+  LOG(INFO) << "Discard mode send completed in " << durationMs << "ms";
+
+  // Wait for data to propagate through the pipeline
+  sleep(3);
+
+  // Stop the reader and shut down.
+  // The reader thread keeps the console pipe drained, which unblocks
+  // TerminalClient's console->write(). When the client shuts down, it
+  // calls console->teardown() which closes the pipe fds, unblocking
+  // the reader thread's read().
+  stopReading.store(true);
+  terminalClient->shutdown();
+  terminalClientThread.join();
+  readerThread.join();
+  terminalClient.reset();
+
+  {
+    lock_guard<mutex> lock(receivedMutex);
+    LOG(INFO) << "Received " << receivedData.size() << " bytes out of "
+              << dataSize;
+    // We should have received some data
+    REQUIRE(receivedData.size() > 0);
+  }
+
+  sshSetupHandler->shutdownHandler();
+}
+
+// Test that backpressure mode with explicit flag works end-to-end
+TEST_CASE_METHOD(ServerEndToEndTestFixture, "BackpressureExplicitTest",
+                 "[BackpressureExplicitTest][integration]") {
+  auto [id, passkey] = sshSetupHandler->SetupSsh(
+      "", "localhost", "localhost", 2022, "", "", false, 0, "", "", {});
+
+  sleep(1);
+
+  shared_ptr<TerminalClient> terminalClient(new TerminalClient(
+      clientSocketHandler, clientPipeSocketHandler, serverEndpoint, id, passkey,
+      fakeConsole, false, "", "", false, "", MAX_CLIENT_KEEP_ALIVE_DURATION, {},
+      WriteBufferMode::BACKPRESSURE));
+  thread terminalClientThread(
+      [terminalClient]() { terminalClient->run("", false); });
+  sleep(3);
+
+  // In backpressure mode, 1MB of data should all arrive without loss
+  const size_t dataSize = 1024 * 1024;
+  string testData(dataSize, '\0');
+  for (size_t i = 0; i < dataSize; i++) {
+    testData[i] = 'A' + (i % 26);
+  }
+
+  thread sendThread([this, &testData]() {
+    const size_t chunkSize = 4096;
+    for (size_t offset = 0; offset < testData.size(); offset += chunkSize) {
+      size_t remaining = min(chunkSize, testData.size() - offset);
+      fakeUserTerminal->simulateTerminalResponse(
+          testData.substr(offset, remaining));
+    }
+  });
+
+  string receivedData = fakeConsole->getTerminalData(dataSize);
+
+  sendThread.join();
+
+  REQUIRE(receivedData.size() == dataSize);
+  REQUIRE(receivedData == testData);
 
   terminalClient->shutdown();
   terminalClientThread.join();
