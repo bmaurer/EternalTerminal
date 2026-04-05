@@ -390,8 +390,9 @@ inline bool waitOnSocketWritable(int fd, int64_t sec = 0, int64_t usec = 0) {
   VLOG(4) << "Before selecting sockFd for write";
   const int selectResult = select(fd + 1, NULL, &fdset, NULL, &tv);
   if (selectResult < 0) {
-    if (errno == EINTR) {
-      // Interrupted by the signal, the caller will retry.
+    if (errno == EINTR || errno == EBADF || errno == EINVAL) {
+      // EINTR: interrupted by signal. EBADF/EINVAL: fd was closed
+      // (e.g. client disconnected). Either way, caller should stop.
       return false;
     } else {
       FATAL_FAIL(selectResult);

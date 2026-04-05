@@ -1,15 +1,43 @@
 #!/bin/bash
-# Runs one E2E flow control scenario. Called by asciinema rec --command.
-MODE="$1"
+# Runs one E2E flow control scenario. Outputs JSONL metrics.
+#
+# Usage: bash do_scenario.sh <mode> [--disconnect] [--outdir DIR]
+#   mode: trunk | backpressure | discard
+#   --disconnect: simulate 60s TCP disconnect at t=30s
+#   --outdir: directory for JSONL output and logs
+#
+# Commits:
+#   trunk:        ee8ddc21c (base) + f8930e169 (harness: --idpasskey, crash fix)
+#   backpressure: 497000e08 (--flow-control backpressure)
+#   discard:      497000e08 (--flow-control discard)
+
+MODE="$1"; shift
+DISCONNECT=false
+OUTDIR="/tmp/et_e2e_results"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --disconnect) DISCONNECT=true ;;
+        --outdir) OUTDIR="$2"; shift ;;
+    esac
+    shift
+done
+
 DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$DIR/../.." && pwd)"
 BUILD="$REPO/build"
 RATE=100000
-ID="Demo$(date +%s | tail -c 8)"
+ID="E2E$(date +%s | tail -c 8)"
 KEY="E2ETestKey123456789012345678901A"
-SIDECAR="/tmp/et_demo_sidecar_$$.txt"
-ETMUX="/tmp/et_demo_client_$$.sock"
-PROXY_LOG="/tmp/et_demo_proxy_$$.log"
+SIDECAR="/tmp/et_e2e_sidecar_$$.txt"
+ETMUX="/tmp/et_e2e_client_$$.sock"
+PROXY_LOG="/tmp/et_e2e_proxy_$$.log"
+
+mkdir -p "$OUTDIR"
+
+SCENARIO="$MODE"
+[ "$DISCONNECT" = "true" ] && SCENARIO="${MODE}-disconnect"
+JSONL="$OUTDIR/${SCENARIO}.jsonl"
+> "$JSONL"
 
 C='\033[1;36m'; G='\033[1;32m'; R='\033[1;31m'; Y='\033[33m'; N='\033[0m'
 
@@ -18,36 +46,47 @@ cleanup() {
     kill $ETSERVER_PID $PROXY_PID 2>/dev/null
     kill -9 $(lsof -t -i:4444 2>/dev/null) $(lsof -t -i:4445 2>/dev/null) 2>/dev/null
     pkill -9 -f "etterminal.*$ID" 2>/dev/null
-    rm -f /tmp/et_demo.fifo "$ETMUX" "$SIDECAR" "$PROXY_LOG"
+    rm -f /tmp/et_e2e_demo.fifo "$ETMUX" "$SIDECAR" "$PROXY_LOG"
+    cd "$REPO" && git checkout HEAD -- . 2>/dev/null
 }
 trap cleanup EXIT
 
+# --- Checkout and build ---
+
+COMMIT_DESC=""
+ET_CMD=""
 case "$MODE" in
     trunk)
-        echo -e "${C}=== ET Flow Control Demo: TRUNK (no flow control) ===${N}"
-        echo -e "${Y}Server reads PTY and calls writePacket() directly.${N}"
+        echo -e "${C}=== Scenario: trunk (no flow control) ===${N}"
+        COMMIT_DESC="ee8ddc21c + f8930e169 (harness only, no WriteBuffer)"
+        ET_CMD="./et --idpasskey=ID/KEY 127.0.0.1:4445"
         cd "$REPO"
         git checkout ee8ddc21c -- src/ proto/ test/integration_tests/ test/unit_tests/ 2>/dev/null
-        git checkout 1c46dd970 -- src/terminal/TerminalClientMain.cpp src/terminal/TerminalMain.cpp src/base/Headers.hpp 2>/dev/null
+        git checkout f8930e169 -- src/terminal/TerminalClientMain.cpp src/terminal/TerminalMain.cpp src/base/Headers.hpp 2>/dev/null
         rm -f src/base/WriteBuffer.hpp test/unit_tests/WriteBufferTest.cpp
         ;;
     backpressure)
-        echo -e "${C}=== ET Flow Control Demo: BACKPRESSURE mode ===${N}"
-        echo -e "${Y}256KB WriteBuffer. Process stalls when buffer fills.${N}"
-        cd "$REPO"
-        git checkout b1171286e -- src/ proto/ test/integration_tests/ test/unit_tests/ 2>/dev/null
+        echo -e "${C}=== Scenario: backpressure ===${N}"
+        COMMIT_DESC="HEAD ($(cd "$REPO" && git rev-parse --short HEAD))"
+        ET_CMD="./et --idpasskey=ID/KEY --flow-control backpressure 127.0.0.1:4445"
+        # Use HEAD as-is (no checkout needed)
         ;;
     discard)
-        echo -e "${C}=== ET Flow Control Demo: DISCARD mode ===${N}"
-        echo -e "${Y}256KB WriteBuffer with discard. Old data dropped.${N}"
-        echo -e "${Y}Process never stalls.${N}"
-        cd "$REPO"
-        git checkout b1171286e -- src/ proto/ test/integration_tests/ test/unit_tests/ 2>/dev/null
+        echo -e "${C}=== Scenario: discard ===${N}"
+        COMMIT_DESC="HEAD ($(cd "$REPO" && git rev-parse --short HEAD))"
+        ET_CMD="./et --idpasskey=ID/KEY --flow-control discard 127.0.0.1:4445"
+        # Use HEAD as-is (no checkout needed)
         ;;
+    *) echo "Usage: $0 <trunk|backpressure|discard> [--disconnect]"; exit 1 ;;
 esac
 FC_FLAG=""
 [ "$MODE" = "backpressure" ] && FC_FLAG="--flow-control backpressure"
 [ "$MODE" = "discard" ] && FC_FLAG="--flow-control discard"
+
+echo "  commit: $COMMIT_DESC"
+echo "  client: $ET_CMD"
+echo "  proxy:  ${RATE}B/s throttle on port 4445"
+[ "$DISCONNECT" = "true" ] && echo "  disconnect: 60s at t=30s"
 echo ""
 
 echo -e "${C}--- Build ---${N}"
@@ -56,10 +95,12 @@ cmake -DDISABLE_VCPKG=ON -GNinja .. 2>&1 | tail -1
 ninja -j4 2>&1 | tail -3
 echo ""
 
-echo -e "${C}--- Start services ---${N}"
-rm -f /tmp/et_demo.fifo
+# --- Start services ---
 
-"$BUILD/etserver" --serverfifo=/tmp/et_demo.fifo --port=4444 &>/dev/null &
+echo -e "${C}--- Services ---${N}"
+rm -f /tmp/et_e2e_demo.fifo
+
+"$BUILD/etserver" --serverfifo=/tmp/et_e2e_demo.fifo --port=4444 --logdir="$OUTDIR" &>/dev/null &
 ETSERVER_PID=$!
 sleep 3
 
@@ -67,10 +108,9 @@ PYTHONUNBUFFERED=1 python3 -u "$DIR/throttle_proxy.py" 4445 4444 "$RATE" >"$PROX
 PROXY_PID=$!
 sleep 2
 
-"$BUILD/etterminal" --idpasskey="$ID/$KEY" --serverfifo=/tmp/et_demo.fifo &>/dev/null &
+"$BUILD/etterminal" --idpasskey="$ID/$KEY" --serverfifo=/tmp/et_e2e_demo.fifo --logdir="$OUTDIR" &>/dev/null &
 sleep 3
 
-# Wait for services
 for i in $(seq 1 15); do
     ES=$(lsof -i:4444 2>/dev/null | grep -c LISTEN)
     PX=$(lsof -i:4445 2>/dev/null | grep -c LISTEN)
@@ -79,91 +119,121 @@ for i in $(seq 1 15); do
 done
 [ "$ES" -lt 1 ] || [ "$PX" -lt 1 ] && { echo -e "${R}FAILED: etserver=$ES proxy=$PX${N}"; exit 1; }
 echo -e "${G}etserver=:4444 proxy=:4445 (${RATE}B/s)${N}"
-echo ""
 
-echo -e "${C}--- Connect ET client through proxy ---${N}"
+# --- Connect ---
+
+echo -e "${C}--- Connect ---${N}"
 tmux -S "$ETMUX" new-session -d -s et -x 200 -y 50
-# Wait for shell to be ready in tmux pane
 for i in $(seq 1 30); do
     tmux -S "$ETMUX" capture-pane -p 2>/dev/null | grep -q '\$' && break
     sleep 1
 done
 tmux -S "$ETMUX" send-keys "$BUILD/et --idpasskey='$ID/$KEY' 127.0.0.1:4445 $FC_FLAG" Enter
 
-# Wait for proxy connection (up to 30s)
 for i in $(seq 1 30); do
-    if grep -q connect "$PROXY_LOG" 2>/dev/null; then
-        echo -e "${G}Connected through throttle proxy${N}"
-        break
-    fi
+    grep -q connect "$PROXY_LOG" 2>/dev/null && break
     sleep 1
-    [ "$i" -eq 30 ] && { echo -e "${R}FAILED: proxy saw no connection after 30s${N}"; echo "proxy log:"; cat "$PROXY_LOG"; echo "tmux pane:"; tmux -S "$ETMUX" capture-pane -p 2>/dev/null | tail -5; echo "ss:"; ss -tnp 2>/dev/null | grep '444[45]\b' | head -3; exit 1; }
+    [ "$i" -eq 30 ] && { echo -e "${R}FAILED: no proxy connection${N}"; cat "$PROXY_LOG"; exit 1; }
 done
+echo -e "${G}Connected through proxy${N}"
 
-# Wait for ET session to establish (shell prompt in tmux)
 for i in $(seq 1 30); do
-    PANE=$(tmux -S "$ETMUX" capture-pane -p 2>/dev/null)
-    # Look for a shell prompt that's NOT from the build directory (i.e. remote shell)
-    if echo "$PANE" | grep -q '\~\]\$'; then
-        echo -e "${G}Remote shell ready${N}"
-        break
-    fi
+    tmux -S "$ETMUX" capture-pane -p 2>/dev/null | grep -qF '~]$' && break
     sleep 1
-    [ "$i" -eq 30 ] && echo -e "${Y}Shell may not be ready yet, proceeding...${N}"
 done
+echo -e "${G}Remote shell ready${N}"
 echo ""
 
-echo -e "${C}--- Running print_timestamps.py (30s) ---${N}"
+# --- Run workload ---
+
+TOTAL_DURATION=30
+[ "$DISCONNECT" = "true" ] && TOTAL_DURATION=120
+DISCONNECT_AT=30
+RECONNECT_AT=90
+
+echo -e "${C}--- print_timestamps.py (${TOTAL_DURATION}s) ---${N}"
 tmux -S "$ETMUX" send-keys "SIDECAR_FILE=$SIDECAR python3 $DIR/print_timestamps.py" Enter
 
-printf "%-8s  %-14s  %-14s  %-10s\n" "TIME" "DISPLAY_LAG" "PROCESS_LAG" "STATUS"
-printf "%-8s  %-14s  %-14s  %-10s\n" "----" "-----------" "-----------" "------"
+PREV_LINES=0
+PREV_ELAPSED="0"
 
-for secs in 10 20 30; do
-    sleep 10
+printf "%-6s  %-12s  %-12s  %-12s  %-10s  %-10s\n" "TIME" "DISPLAY_LAG" "PROCESS_LAG" "LINES/SEC" "CONNECTED" "STATUS"
+printf "%-6s  %-12s  %-12s  %-12s  %-10s  %-10s\n" "----" "-----------" "-----------" "---------" "---------" "------"
+
+ELAPSED=0
+while [ "$ELAPSED" -lt "$TOTAL_DURATION" ]; do
+    sleep 5
+    ELAPSED=$((ELAPSED + 5))
+
+    if [ "$DISCONNECT" = "true" ]; then
+        [ "$ELAPSED" -eq "$DISCONNECT_AT" ] && { echo -e "${R}>>> DISCONNECT <<<${N}"; kill -USR1 $PROXY_PID 2>/dev/null; }
+        [ "$ELAPSED" -eq "$RECONNECT_AT" ] && { echo -e "${G}>>> RECONNECT <<<${N}"; kill -USR2 $PROXY_PID 2>/dev/null; }
+    fi
+
+    CONNECTED="true"
+    [ "$DISCONNECT" = "true" ] && [ "$ELAPSED" -gt "$DISCONNECT_AT" ] && [ "$ELAPSED" -le "$RECONNECT_AT" ] && CONNECTED="false"
+
     SCREEN=$(tmux -S "$ETMUX" capture-pane -p 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+' | tail -1)
     REAL=$(python3 -c "from datetime import datetime; print(datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))")
 
-    DLAG="?"
+    DLAG="null"
     [ -n "$SCREEN" ] && DLAG=$(python3 -c "
 from datetime import datetime
 s=datetime.strptime('${SCREEN}'.strip(),'%Y-%m-%d %H:%M:%S.%f')
 r=datetime.strptime('${REAL}'.strip(),'%Y-%m-%d %H:%M:%S.%f')
 print(f'{(r-s).total_seconds():.1f}')" 2>/dev/null || true)
 
-    PLAG="?"
-    [ -f "$SIDECAR" ] && PLAG=$(python3 -c "
+    PLAG="null"; LINES_SEC="null"; CUR_LINES=0; CUR_ELAPSED="0"
+    if [ -f "$SIDECAR" ]; then
+        IFS=',' read -r PROCESS_TS CUR_LINES CUR_ELAPSED < "$SIDECAR"
+        [ -n "$PROCESS_TS" ] && PLAG=$(python3 -c "
 from datetime import datetime
-s=datetime.strptime(open('$SIDECAR').read().strip(),'%Y-%m-%d %H:%M:%S.%f')
+s=datetime.strptime('${PROCESS_TS}'.strip(),'%Y-%m-%d %H:%M:%S.%f')
 r=datetime.strptime('${REAL}'.strip(),'%Y-%m-%d %H:%M:%S.%f')
 print(f'{(r-s).total_seconds():.1f}')" 2>/dev/null || true)
-
-    PSTATUS=""
-    if [ "$PLAG" != "?" ] && python3 -c "exit(0 if float('$PLAG') < 1.0 else 1)" 2>/dev/null; then
-        PSTATUS="${G}running${N}"
-    else
-        PSTATUS="${R}STALLED${N}"
+        [ -n "$CUR_ELAPSED" ] && [ -n "$CUR_LINES" ] && LINES_SEC=$(python3 -c "
+cl=int('${CUR_LINES}'); pl=int('${PREV_LINES}')
+ct=float('${CUR_ELAPSED}'); pt=float('${PREV_ELAPSED}')
+dt=ct-pt
+print(f'{(cl-pl)/dt:.0f}' if dt > 0.1 else '0')" 2>/dev/null || true)
     fi
+    PREV_LINES="${CUR_LINES:-0}"; PREV_ELAPSED="${CUR_ELAPSED:-0}"
 
-    printf "t=%-5ss  %-14s  %-14s  " "$secs" "${DLAG}s" "${PLAG}s"
-    echo -e "$PSTATUS"
+    PSTATUS="running"
+    [ "$PLAG" != "null" ] && ! python3 -c "exit(0 if float('$PLAG') < 1.0 else 1)" 2>/dev/null && PSTATUS="STALLED"
+
+    DLAG_S="${DLAG}s"; [ "$DLAG" = "null" ] && DLAG_S="?"
+    PLAG_S="${PLAG}s"; [ "$PLAG" = "null" ] && PLAG_S="?"
+    LS_S="$LINES_SEC"; [ "$LINES_SEC" = "null" ] && LS_S="?"
+
+    COLOR="$G"; [ "$PSTATUS" = "STALLED" ] && COLOR="$R"
+    printf "t=%-3ss  %-12s  %-12s  %-12s  %-10s  ${COLOR}%-10s${N}\n" "$ELAPSED" "$DLAG_S" "$PLAG_S" "$LS_S" "$CONNECTED" "$PSTATUS"
+
+    echo "{\"t\":$ELAPSED,\"display_lag\":$DLAG,\"process_lag\":$PLAG,\"lines_sec\":$LINES_SEC,\"connected\":$CONNECTED}" >> "$JSONL"
 done
 
 echo ""
-echo "Proxy throughput:"
-cat "$PROXY_LOG" | grep 'sent=' | tail -3
-echo ""
-
 ES_ALIVE=$(lsof -i:4444 2>/dev/null | grep -c LISTEN)
 [ "$ES_ALIVE" -gt 0 ] && echo -e "etserver: ${G}alive${N}" || echo -e "etserver: ${R}CRASHED${N}"
 
-echo ""
-echo -e "${C}--- Summary: $MODE ---${N}"
-case "$MODE" in
-    trunk) echo "  No flow control. writePacket() blocks on TCP. Process stalls." ;;
-    backpressure) echo "  256KB buffer. Process stalls when full. All data preserved." ;;
-    discard) echo "  256KB buffer. Old data dropped. Process runs freely." ;;
-esac
+cp "$PROXY_LOG" "$OUTDIR/${SCENARIO}_proxy.log" 2>/dev/null
+
+python3 -c "
+import json
+meta = {
+    'scenario': '$SCENARIO',
+    'mode': '$MODE',
+    'disconnect': $( [ \"$DISCONNECT\" = \"true\" ] && echo True || echo False ),
+    'commit': '$COMMIT_DESC',
+    'et_command': '$ET_CMD',
+    'proxy_rate': $RATE,
+    'etserver_alive': $( [ \"$ES_ALIVE\" -gt 0 ] && echo True || echo False ),
+}
+with open('$OUTDIR/${SCENARIO}_meta.json', 'w') as f:
+    json.dump(meta, f, indent=2)
+"
+
+echo "Results: $JSONL"
 
 tmux -S "$ETMUX" send-keys C-c 2>/dev/null
 sleep 1

@@ -1,0 +1,9 @@
+{
+  "scenario": "discard",
+  "mode": "discard",
+  "disconnect": false,
+  "commit": "b1171286e",
+  "et_command": "./et --idpasskey=ID/KEY --flow-control discard 127.0.0.1:4445",
+  "proxy_rate": 100000,
+  "etserver_alive": false
+}

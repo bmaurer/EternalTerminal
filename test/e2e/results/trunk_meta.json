@@ -1,0 +1,9 @@
+{
+  "scenario": "trunk",
+  "mode": "trunk",
+  "disconnect": false,
+  "commit": "ee8ddc21c + 1c46dd970 (harness only, no WriteBuffer)",
+  "et_command": "./et --idpasskey=ID/KEY 127.0.0.1:4445",
+  "proxy_rate": 100000,
+  "etserver_alive": false
+}

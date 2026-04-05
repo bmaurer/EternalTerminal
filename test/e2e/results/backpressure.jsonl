@@ -1,0 +1,6 @@
+{"t":5,"display_lag":4.8,"process_lag":null,"lines_sec":null,"connected":true}
+{"t":10,"display_lag":9.8,"process_lag":-0.0,"lines_sec":51073,"connected":true}
+{"t":15,"display_lag":14.8,"process_lag":0.1,"lines_sec":3562,"connected":true}
+{"t":20,"display_lag":19.8,"process_lag":1.0,"lines_sec":4082,"connected":true}
+{"t":25,"display_lag":24.9,"process_lag":1.2,"lines_sec":2983,"connected":true}
+{"t":30,"display_lag":29.8,"process_lag":1.3,"lines_sec":3555,"connected":true}

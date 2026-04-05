@@ -1,0 +1,442 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>ET Flow Control E2E Report</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:900px;margin:40px auto;padding:0 20px;color:#333;line-height:1.6}
+h1{border-bottom:2px solid #2ecc71;padding-bottom:10px}
+h2{color:#2c3e50;margin-top:40px}
+table{border-collapse:collapse;width:100%;margin:20px 0}
+th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}
+th{background:#f5f5f5}
+.chart{margin:30px 0;text-align:center}
+.good{color:#2ecc71;font-weight:bold}
+.bad{color:#e74c3c;font-weight:bold}
+code{background:#f5f5f5;padding:2px 6px;border-radius:3px;font-size:13px}
+.meta{background:#f9f9f9;border-left:4px solid #3498db;padding:15px;margin:20px 0}
+</style>
+</head><body>
+<h1>ET Flow Control E2E Test Report</h1>
+<p>Generated: 2026-04-05 13:30:30</p>
+<h2>Test Scenarios</h2>
+<table><tr><th>Scenario</th><th>Git Commit</th><th>Client Command</th><th>Proxy Rate</th><th>Server</th></tr>
+<tr><td><b>trunk</b></td><td><code>ee8ddc21c + 1c46dd970 (harness only, no WriteBuffer)</code></td><td><code>./et --idpasskey=ID/KEY 127.0.0.1:4445</code></td><td>100,000 B/s</td><td><span class="bad">CRASHED</span></td></tr>
+<tr><td><b>backpressure</b></td><td><code>b1171286e</code></td><td><code>./et --idpasskey=ID/KEY --flow-control backpressure 127.0.0.1:4445</code></td><td>100,000 B/s</td><td><span class="bad">CRASHED</span></td></tr>
+<tr><td><b>discard</b></td><td><code>b1171286e</code></td><td><code>./et --idpasskey=ID/KEY --flow-control discard 127.0.0.1:4445</code></td><td>100,000 B/s</td><td><span class="bad">CRASHED</span></td></tr>
+<tr><td><b>trunk-disconnect</b></td><td><code>ee8ddc21c + f8930e169 (harness only, no WriteBuffer)</code></td><td><code>./et --idpasskey=ID/KEY 127.0.0.1:4445</code></td><td>100,000 B/s</td><td><span class="bad">CRASHED</span></td></tr>
+<tr><td><b>backpressure-disconnect</b></td><td><code>497000e08</code></td><td><code>./et --idpasskey=ID/KEY --flow-control backpressure 127.0.0.1:4445</code></td><td>100,000 B/s</td><td><span class="bad">CRASHED</span></td></tr>
+<tr><td><b>discard-disconnect</b></td><td><code>497000e08</code></td><td><code>./et --idpasskey=ID/KEY --flow-control discard 127.0.0.1:4445</code></td><td>100,000 B/s</td><td><span class="bad">CRASHED</span></td></tr>
+</table>
+<div class="meta"><b>Setup:</b> etserver :4444 &rarr; throttle proxy :4445 &rarr; et client. Workload: <code>print_timestamps.py</code> ~2.7MB/s. Proxy limits to 100KB/s.</div>
+<h2>Display Lag</h2>
+<p>How stale the terminal output is. Grows ~1s/s in all modes (TCP buffer bottleneck).</p>
+<div class="chart"><svg width="700" height="300" xmlns="http://www.w3.org/2000/svg">
+<rect width="700" height="300" fill="white"/>
+<text x="350" y="20" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Display Lag Over Time</text>
+<line x1="70" y1="40.0" x2="560" y2="40.0" stroke="#eee"/>
+<text x="65" y="44.0" text-anchor="end" font-size="10" fill="#666">136.7</text>
+<line x1="70" y1="82.0" x2="560" y2="82.0" stroke="#eee"/>
+<text x="65" y="86.0" text-anchor="end" font-size="10" fill="#666">109.4</text>
+<line x1="70" y1="124.0" x2="560" y2="124.0" stroke="#eee"/>
+<text x="65" y="128.0" text-anchor="end" font-size="10" fill="#666">82.0</text>
+<line x1="70" y1="166.0" x2="560" y2="166.0" stroke="#eee"/>
+<text x="65" y="170.0" text-anchor="end" font-size="10" fill="#666">54.7</text>
+<line x1="70" y1="208.0" x2="560" y2="208.0" stroke="#eee"/>
+<text x="65" y="212.0" text-anchor="end" font-size="10" fill="#666">27.3</text>
+<line x1="70" y1="250.0" x2="560" y2="250.0" stroke="#eee"/>
+<text x="65" y="254.0" text-anchor="end" font-size="10" fill="#666">0.0</text>
+<line x1="48.69565217391305" y1="250" x2="48.69565217391305" y2="255" stroke="#666"/>
+<text x="48.69565217391305" y="268" text-anchor="middle" font-size="10" fill="#666">0s</text>
+<line x1="108.34782608695653" y1="250" x2="108.34782608695653" y2="255" stroke="#666"/>
+<text x="108.34782608695653" y="268" text-anchor="middle" font-size="10" fill="#666">14s</text>
+<line x1="168.0" y1="250" x2="168.0" y2="255" stroke="#666"/>
+<text x="168.0" y="268" text-anchor="middle" font-size="10" fill="#666">28s</text>
+<line x1="227.65217391304347" y1="250" x2="227.65217391304347" y2="255" stroke="#666"/>
+<text x="227.65217391304347" y="268" text-anchor="middle" font-size="10" fill="#666">42s</text>
+<line x1="287.30434782608694" y1="250" x2="287.30434782608694" y2="255" stroke="#666"/>
+<text x="287.30434782608694" y="268" text-anchor="middle" font-size="10" fill="#666">56s</text>
+<line x1="346.95652173913044" y1="250" x2="346.95652173913044" y2="255" stroke="#666"/>
+<text x="346.95652173913044" y="268" text-anchor="middle" font-size="10" fill="#666">70s</text>
+<line x1="406.60869565217394" y1="250" x2="406.60869565217394" y2="255" stroke="#666"/>
+<text x="406.60869565217394" y="268" text-anchor="middle" font-size="10" fill="#666">84s</text>
+<line x1="466.2608695652174" y1="250" x2="466.2608695652174" y2="255" stroke="#666"/>
+<text x="466.2608695652174" y="268" text-anchor="middle" font-size="10" fill="#666">98s</text>
+<line x1="525.9130434782609" y1="250" x2="525.9130434782609" y2="255" stroke="#666"/>
+<text x="525.9130434782609" y="268" text-anchor="middle" font-size="10" fill="#666">112s</text>
+<line x1="70" y1="40" x2="70" y2="250" stroke="#333"/>
+<line x1="70" y1="250" x2="560" y2="250" stroke="#333"/>
+<text x="350" y="295" text-anchor="middle" font-size="11" fill="#333">Time (seconds)</text>
+<text x="15" y="150" text-anchor="middle" font-size="11" fill="#333" transform="rotate(-90 15 150)">Seconds behind real time</text>
+<line x1="176.52173913043478" y1="40" x2="176.52173913043478" y2="250" stroke="#e74c3c" stroke-width="2" stroke-dasharray="5,5"/>
+<text x="179.52173913043478" y="52" font-size="9" fill="#e74c3c">disconnect</text>
+<line x1="432.17391304347825" y1="40" x2="432.17391304347825" y2="250" stroke="#2ecc71" stroke-width="2" stroke-dasharray="5,5"/>
+<text x="435.17391304347825" y="52" font-size="9" fill="#2ecc71">reconnect</text>
+<path d="M 70.0 242.6 L 91.3 234.8 L 112.6 227.1 L 133.9 219.3 L 155.2 211.6 L 176.5 203.9" fill="none" stroke="#e74c3c" stroke-width="2"/>
+<circle cx="70.0" cy="242.6" r="3" fill="#e74c3c"/>
+<circle cx="91.3" cy="234.8" r="3" fill="#e74c3c"/>
+<circle cx="112.6" cy="227.1" r="3" fill="#e74c3c"/>
+<circle cx="133.9" cy="219.3" r="3" fill="#e74c3c"/>
+<circle cx="155.2" cy="211.6" r="3" fill="#e74c3c"/>
+<circle cx="176.5" cy="203.9" r="3" fill="#e74c3c"/>
+<line x1="570" y1="50" x2="590" y2="50" stroke="#e74c3c" stroke-width="2"/>
+<text x="595" y="54" font-size="10" fill="#333">trunk</text>
+<path d="M 70.0 242.6 L 91.3 234.9 L 112.6 227.3 L 133.9 219.6 L 155.2 211.8 L 176.5 204.2" fill="none" stroke="#f39c12" stroke-width="2"/>
+<circle cx="70.0" cy="242.6" r="3" fill="#f39c12"/>
+<circle cx="91.3" cy="234.9" r="3" fill="#f39c12"/>
+<circle cx="112.6" cy="227.3" r="3" fill="#f39c12"/>
+<circle cx="133.9" cy="219.6" r="3" fill="#f39c12"/>
+<circle cx="155.2" cy="211.8" r="3" fill="#f39c12"/>
+<circle cx="176.5" cy="204.2" r="3" fill="#f39c12"/>
+<line x1="570" y1="68" x2="590" y2="68" stroke="#f39c12" stroke-width="2"/>
+<text x="595" y="72" font-size="10" fill="#333">backpressure</text>
+<path d="M 70.0 242.6 L 91.3 234.9 L 112.6 227.1 L 133.9 219.4 L 155.2 211.8 L 176.5 204.1" fill="none" stroke="#2ecc71" stroke-width="2"/>
+<circle cx="70.0" cy="242.6" r="3" fill="#2ecc71"/>
+<circle cx="91.3" cy="234.9" r="3" fill="#2ecc71"/>
+<circle cx="112.6" cy="227.1" r="3" fill="#2ecc71"/>
+<circle cx="133.9" cy="219.4" r="3" fill="#2ecc71"/>
+<circle cx="155.2" cy="211.8" r="3" fill="#2ecc71"/>
+<circle cx="176.5" cy="204.1" r="3" fill="#2ecc71"/>
+<line x1="570" y1="86" x2="590" y2="86" stroke="#2ecc71" stroke-width="2"/>
+<text x="595" y="90" font-size="10" fill="#333">discard</text>
+<path d="M 70.0 242.6 L 91.3 234.8 L 112.6 227.1 L 133.9 219.4 L 155.2 211.6 L 176.5 203.9 L 197.8 195.8 L 219.1 187.6 L 240.4 179.7 L 261.7 171.7 L 283.0 163.5 L 304.3 155.5 L 325.7 147.6 L 347.0 139.6 L 368.3 131.4 L 389.6 123.4 L 410.9 115.3 L 432.2 107.3 L 453.5 99.3 L 474.8 91.2 L 496.1 83.2 L 517.4 75.1 L 538.7 67.1 L 560.0 59.1" fill="none" stroke="#c0392b" stroke-width="2"/>
+<circle cx="70.0" cy="242.6" r="3" fill="#c0392b"/>
+<circle cx="91.3" cy="234.8" r="3" fill="#c0392b"/>
+<circle cx="112.6" cy="227.1" r="3" fill="#c0392b"/>
+<circle cx="133.9" cy="219.4" r="3" fill="#c0392b"/>
+<circle cx="155.2" cy="211.6" r="3" fill="#c0392b"/>
+<circle cx="176.5" cy="203.9" r="3" fill="#c0392b"/>
+<circle cx="197.8" cy="195.8" r="3" fill="#c0392b"/>
+<circle cx="219.1" cy="187.6" r="3" fill="#c0392b"/>
+<circle cx="240.4" cy="179.7" r="3" fill="#c0392b"/>
+<circle cx="261.7" cy="171.7" r="3" fill="#c0392b"/>
+<circle cx="283.0" cy="163.5" r="3" fill="#c0392b"/>
+<circle cx="304.3" cy="155.5" r="3" fill="#c0392b"/>
+<circle cx="325.7" cy="147.6" r="3" fill="#c0392b"/>
+<circle cx="347.0" cy="139.6" r="3" fill="#c0392b"/>
+<circle cx="368.3" cy="131.4" r="3" fill="#c0392b"/>
+<circle cx="389.6" cy="123.4" r="3" fill="#c0392b"/>
+<circle cx="410.9" cy="115.3" r="3" fill="#c0392b"/>
+<circle cx="432.2" cy="107.3" r="3" fill="#c0392b"/>
+<circle cx="453.5" cy="99.3" r="3" fill="#c0392b"/>
+<circle cx="474.8" cy="91.2" r="3" fill="#c0392b"/>
+<circle cx="496.1" cy="83.2" r="3" fill="#c0392b"/>
+<circle cx="517.4" cy="75.1" r="3" fill="#c0392b"/>
+<circle cx="538.7" cy="67.1" r="3" fill="#c0392b"/>
+<circle cx="560.0" cy="59.1" r="3" fill="#c0392b"/>
+<line x1="570" y1="104" x2="590" y2="104" stroke="#c0392b" stroke-width="2"/>
+<text x="595" y="108" font-size="10" fill="#333">trunk-disconnect</text>
+<path d="M 70.0 242.6 L 91.3 235.1 L 112.6 227.6 L 133.9 219.9 L 155.2 212.4 L 176.5 205.2 L 197.8 197.3 L 219.1 189.5 L 240.4 181.7 L 261.7 173.8 L 283.0 166.0 L 304.3 158.2 L 325.7 150.3 L 347.0 142.5 L 368.3 134.7 L 389.6 126.8 L 410.9 119.0 L 432.2 111.2 L 453.5 103.3 L 474.8 95.5 L 496.1 87.7 L 517.4 79.8 L 538.7 72.0 L 560.0 64.2" fill="none" stroke="#e67e22" stroke-width="2"/>
+<circle cx="70.0" cy="242.6" r="3" fill="#e67e22"/>
+<circle cx="91.3" cy="235.1" r="3" fill="#e67e22"/>
+<circle cx="112.6" cy="227.6" r="3" fill="#e67e22"/>
+<circle cx="133.9" cy="219.9" r="3" fill="#e67e22"/>
+<circle cx="155.2" cy="212.4" r="3" fill="#e67e22"/>
+<circle cx="176.5" cy="205.2" r="3" fill="#e67e22"/>
+<circle cx="197.8" cy="197.3" r="3" fill="#e67e22"/>
+<circle cx="219.1" cy="189.5" r="3" fill="#e67e22"/>
+<circle cx="240.4" cy="181.7" r="3" fill="#e67e22"/>
+<circle cx="261.7" cy="173.8" r="3" fill="#e67e22"/>
+<circle cx="283.0" cy="166.0" r="3" fill="#e67e22"/>
+<circle cx="304.3" cy="158.2" r="3" fill="#e67e22"/>
+<circle cx="325.7" cy="150.3" r="3" fill="#e67e22"/>
+<circle cx="347.0" cy="142.5" r="3" fill="#e67e22"/>
+<circle cx="368.3" cy="134.7" r="3" fill="#e67e22"/>
+<circle cx="389.6" cy="126.8" r="3" fill="#e67e22"/>
+<circle cx="410.9" cy="119.0" r="3" fill="#e67e22"/>
+<circle cx="432.2" cy="111.2" r="3" fill="#e67e22"/>
+<circle cx="453.5" cy="103.3" r="3" fill="#e67e22"/>
+<circle cx="474.8" cy="95.5" r="3" fill="#e67e22"/>
+<circle cx="496.1" cy="87.7" r="3" fill="#e67e22"/>
+<circle cx="517.4" cy="79.8" r="3" fill="#e67e22"/>
+<circle cx="538.7" cy="72.0" r="3" fill="#e67e22"/>
+<circle cx="560.0" cy="64.2" r="3" fill="#e67e22"/>
+<line x1="570" y1="122" x2="590" y2="122" stroke="#e67e22" stroke-width="2"/>
+<text x="595" y="126" font-size="10" fill="#333">backpressure-disconnect</text>
+<path d="M 70.0 242.6 L 91.3 235.1 L 112.6 227.6 L 133.9 219.9 L 155.2 212.4 L 176.5 205.0 L 197.8 197.2 L 219.1 189.3 L 240.4 181.5 L 261.7 173.7 L 283.0 165.8 L 304.3 158.0 L 325.7 150.2 L 347.0 142.3 L 368.3 134.5 L 389.6 126.7 L 410.9 118.8 L 432.2 111.0 L 453.5 103.2 L 474.8 95.3 L 496.1 87.5 L 517.4 79.7 L 538.7 71.8 L 560.0 64.0" fill="none" stroke="#3498db" stroke-width="2"/>
+<circle cx="70.0" cy="242.6" r="3" fill="#3498db"/>
+<circle cx="91.3" cy="235.1" r="3" fill="#3498db"/>
+<circle cx="112.6" cy="227.6" r="3" fill="#3498db"/>
+<circle cx="133.9" cy="219.9" r="3" fill="#3498db"/>
+<circle cx="155.2" cy="212.4" r="3" fill="#3498db"/>
+<circle cx="176.5" cy="205.0" r="3" fill="#3498db"/>
+<circle cx="197.8" cy="197.2" r="3" fill="#3498db"/>
+<circle cx="219.1" cy="189.3" r="3" fill="#3498db"/>
+<circle cx="240.4" cy="181.5" r="3" fill="#3498db"/>
+<circle cx="261.7" cy="173.7" r="3" fill="#3498db"/>
+<circle cx="283.0" cy="165.8" r="3" fill="#3498db"/>
+<circle cx="304.3" cy="158.0" r="3" fill="#3498db"/>
+<circle cx="325.7" cy="150.2" r="3" fill="#3498db"/>
+<circle cx="347.0" cy="142.3" r="3" fill="#3498db"/>
+<circle cx="368.3" cy="134.5" r="3" fill="#3498db"/>
+<circle cx="389.6" cy="126.7" r="3" fill="#3498db"/>
+<circle cx="410.9" cy="118.8" r="3" fill="#3498db"/>
+<circle cx="432.2" cy="111.0" r="3" fill="#3498db"/>
+<circle cx="453.5" cy="103.2" r="3" fill="#3498db"/>
+<circle cx="474.8" cy="95.3" r="3" fill="#3498db"/>
+<circle cx="496.1" cy="87.5" r="3" fill="#3498db"/>
+<circle cx="517.4" cy="79.7" r="3" fill="#3498db"/>
+<circle cx="538.7" cy="71.8" r="3" fill="#3498db"/>
+<circle cx="560.0" cy="64.0" r="3" fill="#3498db"/>
+<line x1="570" y1="140" x2="590" y2="140" stroke="#3498db" stroke-width="2"/>
+<text x="595" y="144" font-size="10" fill="#333">discard-disconnect</text>
+</svg></div>
+<h2>Process Lag</h2>
+<p>Whether the producing process is stalled. <span class="good">0 = running freely</span>, <span class="bad">&gt;1 = blocked on write()</span>.</p>
+<div class="chart"><svg width="700" height="300" xmlns="http://www.w3.org/2000/svg">
+<rect width="700" height="300" fill="white"/>
+<text x="350" y="20" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Process Lag Over Time</text>
+<line x1="70" y1="40.0" x2="560" y2="40.0" stroke="#eee"/>
+<text x="65" y="44.0" text-anchor="end" font-size="10" fill="#666">104.7</text>
+<line x1="70" y1="82.0" x2="560" y2="82.0" stroke="#eee"/>
+<text x="65" y="86.0" text-anchor="end" font-size="10" fill="#666">83.8</text>
+<line x1="70" y1="124.0" x2="560" y2="124.0" stroke="#eee"/>
+<text x="65" y="128.0" text-anchor="end" font-size="10" fill="#666">62.8</text>
+<line x1="70" y1="166.0" x2="560" y2="166.0" stroke="#eee"/>
+<text x="65" y="170.0" text-anchor="end" font-size="10" fill="#666">41.9</text>
+<line x1="70" y1="208.0" x2="560" y2="208.0" stroke="#eee"/>
+<text x="65" y="212.0" text-anchor="end" font-size="10" fill="#666">20.9</text>
+<line x1="70" y1="250.0" x2="560" y2="250.0" stroke="#eee"/>
+<text x="65" y="254.0" text-anchor="end" font-size="10" fill="#666">0.0</text>
+<line x1="48.69565217391305" y1="250" x2="48.69565217391305" y2="255" stroke="#666"/>
+<text x="48.69565217391305" y="268" text-anchor="middle" font-size="10" fill="#666">0s</text>
+<line x1="108.34782608695653" y1="250" x2="108.34782608695653" y2="255" stroke="#666"/>
+<text x="108.34782608695653" y="268" text-anchor="middle" font-size="10" fill="#666">14s</text>
+<line x1="168.0" y1="250" x2="168.0" y2="255" stroke="#666"/>
+<text x="168.0" y="268" text-anchor="middle" font-size="10" fill="#666">28s</text>
+<line x1="227.65217391304347" y1="250" x2="227.65217391304347" y2="255" stroke="#666"/>
+<text x="227.65217391304347" y="268" text-anchor="middle" font-size="10" fill="#666">42s</text>
+<line x1="287.30434782608694" y1="250" x2="287.30434782608694" y2="255" stroke="#666"/>
+<text x="287.30434782608694" y="268" text-anchor="middle" font-size="10" fill="#666">56s</text>
+<line x1="346.95652173913044" y1="250" x2="346.95652173913044" y2="255" stroke="#666"/>
+<text x="346.95652173913044" y="268" text-anchor="middle" font-size="10" fill="#666">70s</text>
+<line x1="406.60869565217394" y1="250" x2="406.60869565217394" y2="255" stroke="#666"/>
+<text x="406.60869565217394" y="268" text-anchor="middle" font-size="10" fill="#666">84s</text>
+<line x1="466.2608695652174" y1="250" x2="466.2608695652174" y2="255" stroke="#666"/>
+<text x="466.2608695652174" y="268" text-anchor="middle" font-size="10" fill="#666">98s</text>
+<line x1="525.9130434782609" y1="250" x2="525.9130434782609" y2="255" stroke="#666"/>
+<text x="525.9130434782609" y="268" text-anchor="middle" font-size="10" fill="#666">112s</text>
+<line x1="70" y1="40" x2="70" y2="250" stroke="#333"/>
+<line x1="70" y1="250" x2="560" y2="250" stroke="#333"/>
+<text x="350" y="295" text-anchor="middle" font-size="11" fill="#333">Time (seconds)</text>
+<text x="15" y="150" text-anchor="middle" font-size="11" fill="#333" transform="rotate(-90 15 150)">Seconds behind real time</text>
+<line x1="176.52173913043478" y1="40" x2="176.52173913043478" y2="250" stroke="#e74c3c" stroke-width="2" stroke-dasharray="5,5"/>
+<text x="179.52173913043478" y="52" font-size="9" fill="#e74c3c">disconnect</text>
+<line x1="432.17391304347825" y1="40" x2="432.17391304347825" y2="250" stroke="#2ecc71" stroke-width="2" stroke-dasharray="5,5"/>
+<text x="435.17391304347825" y="52" font-size="9" fill="#2ecc71">reconnect</text>
+<path d="M 70.0 250.2 L 91.3 249.0 L 112.6 249.4 L 133.9 249.6 L 155.2 250.0 L 176.5 250.2" fill="none" stroke="#e74c3c" stroke-width="2"/>
+<circle cx="70.0" cy="250.2" r="3" fill="#e74c3c"/>
+<circle cx="91.3" cy="249.0" r="3" fill="#e74c3c"/>
+<circle cx="112.6" cy="249.4" r="3" fill="#e74c3c"/>
+<circle cx="133.9" cy="249.6" r="3" fill="#e74c3c"/>
+<circle cx="155.2" cy="250.0" r="3" fill="#e74c3c"/>
+<circle cx="176.5" cy="250.2" r="3" fill="#e74c3c"/>
+<line x1="570" y1="50" x2="590" y2="50" stroke="#e74c3c" stroke-width="2"/>
+<text x="595" y="54" font-size="10" fill="#333">trunk</text>
+<path d="M 91.3 250.0 L 112.6 249.8 L 133.9 248.0 L 155.2 247.6 L 176.5 247.4" fill="none" stroke="#f39c12" stroke-width="2"/>
+<circle cx="91.3" cy="250.0" r="3" fill="#f39c12"/>
+<circle cx="112.6" cy="249.8" r="3" fill="#f39c12"/>
+<circle cx="133.9" cy="248.0" r="3" fill="#f39c12"/>
+<circle cx="155.2" cy="247.6" r="3" fill="#f39c12"/>
+<circle cx="176.5" cy="247.4" r="3" fill="#f39c12"/>
+<line x1="570" y1="68" x2="590" y2="68" stroke="#f39c12" stroke-width="2"/>
+<text x="595" y="72" font-size="10" fill="#333">backpressure</text>
+<path d="M 70.0 250.2 L 91.3 250.2 L 112.6 250.2 L 133.9 250.2 L 155.2 250.2 L 176.5 250.2" fill="none" stroke="#2ecc71" stroke-width="2"/>
+<circle cx="70.0" cy="250.2" r="3" fill="#2ecc71"/>
+<circle cx="91.3" cy="250.2" r="3" fill="#2ecc71"/>
+<circle cx="112.6" cy="250.2" r="3" fill="#2ecc71"/>
+<circle cx="133.9" cy="250.2" r="3" fill="#2ecc71"/>
+<circle cx="155.2" cy="250.2" r="3" fill="#2ecc71"/>
+<circle cx="176.5" cy="250.2" r="3" fill="#2ecc71"/>
+<line x1="570" y1="86" x2="590" y2="86" stroke="#2ecc71" stroke-width="2"/>
+<text x="595" y="90" font-size="10" fill="#333">discard</text>
+<path d="M 70.0 250.2 L 91.3 250.2 L 112.6 247.8 L 133.9 249.2 L 155.2 246.6 L 176.5 248.2 L 197.8 237.8 L 219.1 227.1 L 240.4 216.5 L 261.7 206.1 L 283.0 195.7 L 304.3 185.2 L 325.7 174.6 L 347.0 164.2 L 368.3 153.7 L 389.6 143.3 L 410.9 132.7 L 432.2 122.1 L 453.5 111.6 L 474.8 101.0 L 496.1 90.6 L 517.4 80.1 L 538.7 69.5 L 560.0 59.1" fill="none" stroke="#c0392b" stroke-width="2"/>
+<circle cx="70.0" cy="250.2" r="3" fill="#c0392b"/>
+<circle cx="91.3" cy="250.2" r="3" fill="#c0392b"/>
+<circle cx="112.6" cy="247.8" r="3" fill="#c0392b"/>
+<circle cx="133.9" cy="249.2" r="3" fill="#c0392b"/>
+<circle cx="155.2" cy="246.6" r="3" fill="#c0392b"/>
+<circle cx="176.5" cy="248.2" r="3" fill="#c0392b"/>
+<circle cx="197.8" cy="237.8" r="3" fill="#c0392b"/>
+<circle cx="219.1" cy="227.1" r="3" fill="#c0392b"/>
+<circle cx="240.4" cy="216.5" r="3" fill="#c0392b"/>
+<circle cx="261.7" cy="206.1" r="3" fill="#c0392b"/>
+<circle cx="283.0" cy="195.7" r="3" fill="#c0392b"/>
+<circle cx="304.3" cy="185.2" r="3" fill="#c0392b"/>
+<circle cx="325.7" cy="174.6" r="3" fill="#c0392b"/>
+<circle cx="347.0" cy="164.2" r="3" fill="#c0392b"/>
+<circle cx="368.3" cy="153.7" r="3" fill="#c0392b"/>
+<circle cx="389.6" cy="143.3" r="3" fill="#c0392b"/>
+<circle cx="410.9" cy="132.7" r="3" fill="#c0392b"/>
+<circle cx="432.2" cy="122.1" r="3" fill="#c0392b"/>
+<circle cx="453.5" cy="111.6" r="3" fill="#c0392b"/>
+<circle cx="474.8" cy="101.0" r="3" fill="#c0392b"/>
+<circle cx="496.1" cy="90.6" r="3" fill="#c0392b"/>
+<circle cx="517.4" cy="80.1" r="3" fill="#c0392b"/>
+<circle cx="538.7" cy="69.5" r="3" fill="#c0392b"/>
+<circle cx="560.0" cy="59.1" r="3" fill="#c0392b"/>
+<line x1="570" y1="104" x2="590" y2="104" stroke="#c0392b" stroke-width="2"/>
+<text x="595" y="108" font-size="10" fill="#333">trunk-disconnect</text>
+<path d="M 70.0 248.6 L 91.3 246.4 L 112.6 248.2 L 133.9 249.8 L 155.2 245.6 L 176.5 247.2 L 197.8 237.0 L 219.1 226.7 L 240.4 216.5 L 261.7 206.3 L 283.0 196.1 L 304.3 185.8 L 325.7 175.6 L 347.0 165.4 L 368.3 155.1 L 389.6 144.9 L 410.9 134.7 L 432.2 124.5 L 453.5 114.2 L 474.8 104.0 L 496.1 93.8 L 517.4 83.6 L 538.7 73.3 L 560.0 63.1" fill="none" stroke="#e67e22" stroke-width="2"/>
+<circle cx="70.0" cy="248.6" r="3" fill="#e67e22"/>
+<circle cx="91.3" cy="246.4" r="3" fill="#e67e22"/>
+<circle cx="112.6" cy="248.2" r="3" fill="#e67e22"/>
+<circle cx="133.9" cy="249.8" r="3" fill="#e67e22"/>
+<circle cx="155.2" cy="245.6" r="3" fill="#e67e22"/>
+<circle cx="176.5" cy="247.2" r="3" fill="#e67e22"/>
+<circle cx="197.8" cy="237.0" r="3" fill="#e67e22"/>
+<circle cx="219.1" cy="226.7" r="3" fill="#e67e22"/>
+<circle cx="240.4" cy="216.5" r="3" fill="#e67e22"/>
+<circle cx="261.7" cy="206.3" r="3" fill="#e67e22"/>
+<circle cx="283.0" cy="196.1" r="3" fill="#e67e22"/>
+<circle cx="304.3" cy="185.8" r="3" fill="#e67e22"/>
+<circle cx="325.7" cy="175.6" r="3" fill="#e67e22"/>
+<circle cx="347.0" cy="165.4" r="3" fill="#e67e22"/>
+<circle cx="368.3" cy="155.1" r="3" fill="#e67e22"/>
+<circle cx="389.6" cy="144.9" r="3" fill="#e67e22"/>
+<circle cx="410.9" cy="134.7" r="3" fill="#e67e22"/>
+<circle cx="432.2" cy="124.5" r="3" fill="#e67e22"/>
+<circle cx="453.5" cy="114.2" r="3" fill="#e67e22"/>
+<circle cx="474.8" cy="104.0" r="3" fill="#e67e22"/>
+<circle cx="496.1" cy="93.8" r="3" fill="#e67e22"/>
+<circle cx="517.4" cy="83.6" r="3" fill="#e67e22"/>
+<circle cx="538.7" cy="73.3" r="3" fill="#e67e22"/>
+<circle cx="560.0" cy="63.1" r="3" fill="#e67e22"/>
+<line x1="570" y1="122" x2="590" y2="122" stroke="#e67e22" stroke-width="2"/>
+<text x="595" y="126" font-size="10" fill="#333">backpressure-disconnect</text>
+<path d="M 70.0 250.0 L 91.3 250.0 L 112.6 250.0 L 133.9 250.0 L 155.2 250.0 L 176.5 250.0 L 197.8 239.8 L 219.1 229.5 L 240.4 219.3 L 261.7 209.1 L 283.0 198.9 L 304.3 188.6 L 325.7 178.4 L 347.0 168.2 L 368.3 158.0 L 389.6 147.7 L 410.9 137.5 L 432.2 127.3 L 453.5 117.0 L 474.8 106.8 L 496.1 96.6 L 517.4 86.4 L 538.7 76.1 L 560.0 65.9" fill="none" stroke="#3498db" stroke-width="2"/>
+<circle cx="70.0" cy="250.0" r="3" fill="#3498db"/>
+<circle cx="91.3" cy="250.0" r="3" fill="#3498db"/>
+<circle cx="112.6" cy="250.0" r="3" fill="#3498db"/>
+<circle cx="133.9" cy="250.0" r="3" fill="#3498db"/>
+<circle cx="155.2" cy="250.0" r="3" fill="#3498db"/>
+<circle cx="176.5" cy="250.0" r="3" fill="#3498db"/>
+<circle cx="197.8" cy="239.8" r="3" fill="#3498db"/>
+<circle cx="219.1" cy="229.5" r="3" fill="#3498db"/>
+<circle cx="240.4" cy="219.3" r="3" fill="#3498db"/>
+<circle cx="261.7" cy="209.1" r="3" fill="#3498db"/>
+<circle cx="283.0" cy="198.9" r="3" fill="#3498db"/>
+<circle cx="304.3" cy="188.6" r="3" fill="#3498db"/>
+<circle cx="325.7" cy="178.4" r="3" fill="#3498db"/>
+<circle cx="347.0" cy="168.2" r="3" fill="#3498db"/>
+<circle cx="368.3" cy="158.0" r="3" fill="#3498db"/>
+<circle cx="389.6" cy="147.7" r="3" fill="#3498db"/>
+<circle cx="410.9" cy="137.5" r="3" fill="#3498db"/>
+<circle cx="432.2" cy="127.3" r="3" fill="#3498db"/>
+<circle cx="453.5" cy="117.0" r="3" fill="#3498db"/>
+<circle cx="474.8" cy="106.8" r="3" fill="#3498db"/>
+<circle cx="496.1" cy="96.6" r="3" fill="#3498db"/>
+<circle cx="517.4" cy="86.4" r="3" fill="#3498db"/>
+<circle cx="538.7" cy="76.1" r="3" fill="#3498db"/>
+<circle cx="560.0" cy="65.9" r="3" fill="#3498db"/>
+<line x1="570" y1="140" x2="590" y2="140" stroke="#3498db" stroke-width="2"/>
+<text x="595" y="144" font-size="10" fill="#333">discard-disconnect</text>
+</svg></div>
+<h2>Process Throughput</h2>
+<p>Lines/sec written by the producing process. Higher = process running freely.</p>
+<div class="chart"><svg width="700" height="300" xmlns="http://www.w3.org/2000/svg">
+<rect width="700" height="300" fill="white"/>
+<text x="350" y="20" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Process Throughput</text>
+<line x1="70" y1="40.0" x2="560" y2="40.0" stroke="#eee"/>
+<text x="65" y="44.0" text-anchor="end" font-size="10" fill="#666">101404.6</text>
+<line x1="70" y1="82.0" x2="560" y2="82.0" stroke="#eee"/>
+<text x="65" y="86.0" text-anchor="end" font-size="10" fill="#666">81123.7</text>
+<line x1="70" y1="124.0" x2="560" y2="124.0" stroke="#eee"/>
+<text x="65" y="128.0" text-anchor="end" font-size="10" fill="#666">60842.8</text>
+<line x1="70" y1="166.0" x2="560" y2="166.0" stroke="#eee"/>
+<text x="65" y="170.0" text-anchor="end" font-size="10" fill="#666">40561.8</text>
+<line x1="70" y1="208.0" x2="560" y2="208.0" stroke="#eee"/>
+<text x="65" y="212.0" text-anchor="end" font-size="10" fill="#666">20280.9</text>
+<line x1="70" y1="250.0" x2="560" y2="250.0" stroke="#eee"/>
+<text x="65" y="254.0" text-anchor="end" font-size="10" fill="#666">0.0</text>
+<line x1="48.69565217391305" y1="250" x2="48.69565217391305" y2="255" stroke="#666"/>
+<text x="48.69565217391305" y="268" text-anchor="middle" font-size="10" fill="#666">0s</text>
+<line x1="108.34782608695653" y1="250" x2="108.34782608695653" y2="255" stroke="#666"/>
+<text x="108.34782608695653" y="268" text-anchor="middle" font-size="10" fill="#666">14s</text>
+<line x1="168.0" y1="250" x2="168.0" y2="255" stroke="#666"/>
+<text x="168.0" y="268" text-anchor="middle" font-size="10" fill="#666">28s</text>
+<line x1="227.65217391304347" y1="250" x2="227.65217391304347" y2="255" stroke="#666"/>
+<text x="227.65217391304347" y="268" text-anchor="middle" font-size="10" fill="#666">42s</text>
+<line x1="287.30434782608694" y1="250" x2="287.30434782608694" y2="255" stroke="#666"/>
+<text x="287.30434782608694" y="268" text-anchor="middle" font-size="10" fill="#666">56s</text>
+<line x1="346.95652173913044" y1="250" x2="346.95652173913044" y2="255" stroke="#666"/>
+<text x="346.95652173913044" y="268" text-anchor="middle" font-size="10" fill="#666">70s</text>
+<line x1="406.60869565217394" y1="250" x2="406.60869565217394" y2="255" stroke="#666"/>
+<text x="406.60869565217394" y="268" text-anchor="middle" font-size="10" fill="#666">84s</text>
+<line x1="466.2608695652174" y1="250" x2="466.2608695652174" y2="255" stroke="#666"/>
+<text x="466.2608695652174" y="268" text-anchor="middle" font-size="10" fill="#666">98s</text>
+<line x1="525.9130434782609" y1="250" x2="525.9130434782609" y2="255" stroke="#666"/>
+<text x="525.9130434782609" y="268" text-anchor="middle" font-size="10" fill="#666">112s</text>
+<line x1="70" y1="40" x2="70" y2="250" stroke="#333"/>
+<line x1="70" y1="250" x2="560" y2="250" stroke="#333"/>
+<text x="350" y="295" text-anchor="middle" font-size="11" fill="#333">Time (seconds)</text>
+<text x="15" y="150" text-anchor="middle" font-size="11" fill="#333" transform="rotate(-90 15 150)">Lines/sec</text>
+<line x1="176.52173913043478" y1="40" x2="176.52173913043478" y2="250" stroke="#e74c3c" stroke-width="2" stroke-dasharray="5,5"/>
+<text x="179.52173913043478" y="52" font-size="9" fill="#e74c3c">disconnect</text>
+<line x1="432.17391304347825" y1="40" x2="432.17391304347825" y2="250" stroke="#2ecc71" stroke-width="2" stroke-dasharray="5,5"/>
+<text x="435.17391304347825" y="52" font-size="9" fill="#2ecc71">reconnect</text>
+<path d="M 70.0 75.6 L 91.3 109.0 L 112.6 243.1 L 133.9 243.1 L 155.2 241.9 L 176.5 244.6" fill="none" stroke="#e74c3c" stroke-width="2"/>
+<circle cx="70.0" cy="75.6" r="3" fill="#e74c3c"/>
+<circle cx="91.3" cy="109.0" r="3" fill="#e74c3c"/>
+<circle cx="112.6" cy="243.1" r="3" fill="#e74c3c"/>
+<circle cx="133.9" cy="243.1" r="3" fill="#e74c3c"/>
+<circle cx="155.2" cy="241.9" r="3" fill="#e74c3c"/>
+<circle cx="176.5" cy="244.6" r="3" fill="#e74c3c"/>
+<line x1="570" y1="50" x2="590" y2="50" stroke="#e74c3c" stroke-width="2"/>
+<text x="595" y="54" font-size="10" fill="#333">trunk</text>
+<path d="M 91.3 144.2 L 112.6 242.6 L 133.9 241.5 L 155.2 243.8 L 176.5 242.6" fill="none" stroke="#f39c12" stroke-width="2"/>
+<circle cx="91.3" cy="144.2" r="3" fill="#f39c12"/>
+<circle cx="112.6" cy="242.6" r="3" fill="#f39c12"/>
+<circle cx="133.9" cy="241.5" r="3" fill="#f39c12"/>
+<circle cx="155.2" cy="243.8" r="3" fill="#f39c12"/>
+<circle cx="176.5" cy="242.6" r="3" fill="#f39c12"/>
+<line x1="570" y1="68" x2="590" y2="68" stroke="#f39c12" stroke-width="2"/>
+<text x="595" y="72" font-size="10" fill="#333">backpressure</text>
+<path d="M 70.0 60.3 L 91.3 60.3 L 112.6 62.6 L 133.9 59.9 L 155.2 59.1 L 176.5 60.8" fill="none" stroke="#2ecc71" stroke-width="2"/>
+<circle cx="70.0" cy="60.3" r="3" fill="#2ecc71"/>
+<circle cx="91.3" cy="60.3" r="3" fill="#2ecc71"/>
+<circle cx="112.6" cy="62.6" r="3" fill="#2ecc71"/>
+<circle cx="133.9" cy="59.9" r="3" fill="#2ecc71"/>
+<circle cx="155.2" cy="59.1" r="3" fill="#2ecc71"/>
+<circle cx="176.5" cy="60.8" r="3" fill="#2ecc71"/>
+<line x1="570" y1="86" x2="590" y2="86" stroke="#2ecc71" stroke-width="2"/>
+<text x="595" y="90" font-size="10" fill="#333">discard</text>
+<path d="M 70.0 75.0 L 91.3 194.0 L 112.6 239.7 L 133.9 243.4 L 155.2 242.7 L 176.5 243.4" fill="none" stroke="#c0392b" stroke-width="2"/>
+<circle cx="70.0" cy="75.0" r="3" fill="#c0392b"/>
+<circle cx="91.3" cy="194.0" r="3" fill="#c0392b"/>
+<circle cx="112.6" cy="239.7" r="3" fill="#c0392b"/>
+<circle cx="133.9" cy="243.4" r="3" fill="#c0392b"/>
+<circle cx="155.2" cy="242.7" r="3" fill="#c0392b"/>
+<circle cx="176.5" cy="243.4" r="3" fill="#c0392b"/>
+<line x1="570" y1="104" x2="590" y2="104" stroke="#c0392b" stroke-width="2"/>
+<text x="595" y="108" font-size="10" fill="#333">trunk-disconnect</text>
+<path d="M 70.0 66.6 L 91.3 240.3 L 112.6 243.0 L 133.9 242.7 L 155.2 243.0 L 176.5 243.0" fill="none" stroke="#e67e22" stroke-width="2"/>
+<circle cx="70.0" cy="66.6" r="3" fill="#e67e22"/>
+<circle cx="91.3" cy="240.3" r="3" fill="#e67e22"/>
+<circle cx="112.6" cy="243.0" r="3" fill="#e67e22"/>
+<circle cx="133.9" cy="242.7" r="3" fill="#e67e22"/>
+<circle cx="155.2" cy="243.0" r="3" fill="#e67e22"/>
+<circle cx="176.5" cy="243.0" r="3" fill="#e67e22"/>
+<line x1="570" y1="122" x2="590" y2="122" stroke="#e67e22" stroke-width="2"/>
+<text x="595" y="126" font-size="10" fill="#333">backpressure-disconnect</text>
+<path d="M 70.0 61.1 L 91.3 61.5 L 112.6 60.0 L 133.9 60.6 L 155.2 62.4 L 176.5 59.3" fill="none" stroke="#3498db" stroke-width="2"/>
+<circle cx="70.0" cy="61.1" r="3" fill="#3498db"/>
+<circle cx="91.3" cy="61.5" r="3" fill="#3498db"/>
+<circle cx="112.6" cy="60.0" r="3" fill="#3498db"/>
+<circle cx="133.9" cy="60.6" r="3" fill="#3498db"/>
+<circle cx="155.2" cy="62.4" r="3" fill="#3498db"/>
+<circle cx="176.5" cy="59.3" r="3" fill="#3498db"/>
+<line x1="570" y1="140" x2="590" y2="140" stroke="#3498db" stroke-width="2"/>
+<text x="595" y="144" font-size="10" fill="#333">discard-disconnect</text>
+</svg></div>
+<h2>Interpretation</h2>
+<h3>Display lag is a network property</h3>
+<p>All modes show ~1s/s growth because the proxy limits throughput. TCP is ordered &mdash; data in the kernel buffer must be delivered in sequence. No application-level change can fix this.</p>
+<h3>Process lag is the key differentiator</h3>
+<p><b>Trunk &amp; backpressure:</b> process stalls intermittently (process_lag &gt; 0) when TCP buffer fills.</p>
+<p><b>Discard:</b> process_lag stays at <span class="good">0</span>. Old data dropped, PTY always drained.</p>
+<h3>Disconnect scenario</h3>
+<p>At t=30s, proxy kills TCP connections for 60s. At t=90s, proxy resumes.</p>
+<p>In <b>discard</b> mode, the process keeps running during disconnect. WriteBuffer discards old output. On reconnect, client sees recent data.</p>
+<h3>When to use each mode</h3>
+<table><tr><th>Mode</th><th>Best for</th><th>Trade-off</th></tr>
+<tr><td>discard (default)</td><td>Long-running jobs, builds</td><td>Old output lost</td></tr>
+<tr><td>backpressure</td><td>tmux -CC, stateful protocols</td><td>Process stalls</td></tr></table>
+</body></html>

@@ -10,7 +10,6 @@
 #include "TerminalClient.hpp"
 #include "TunnelUtils.hpp"
 #include "WinsockContext.hpp"
-#include "WriteBuffer.hpp"
 
 using namespace et;
 
@@ -153,11 +152,7 @@ int main(int argc, char** argv) {
         ("idpasskey",
          "If set, skip SSH and use this id/passkey directly (format: "
          "id/passkey). Start etterminal manually before connecting.",
-         cxxopts::value<std::string>())  //
-        ("flow-control",
-         "Flow control mode: 'discard' (default, processes never stall) or "
-         "'backpressure' (stop process output when client is slow)",
-         cxxopts::value<std::string>()->default_value("discard"));
+         cxxopts::value<std::string>());
 
     options.parse_positional({"host"});
     auto result = options.parse(argc, argv);
@@ -405,21 +400,10 @@ int main(int argc, char** argv) {
           etterminal_path, serverFifo, ssh_options);
     }
 
-    WriteBufferMode flowControlMode = WriteBufferMode::DISCARD;
-    string flowControlStr = result["flow-control"].as<string>();
-    if (flowControlStr == "backpressure") {
-      flowControlMode = WriteBufferMode::BACKPRESSURE;
-    } else if (flowControlStr != "discard") {
-      CLOG(INFO, "stdout") << "Invalid flow-control mode: " << flowControlStr
-                           << ". Must be 'discard' or 'backpressure'." << endl;
-      exit(1);
-    }
-
     TerminalClient terminalClient(
         clientSocket, clientPipeSocket, socketEndpoint, idpasskeypair.first,
         idpasskeypair.second, console, is_jumphost, tunnel_arg, r_tunnel_arg,
-        forwardAgent, sshSocket, keepaliveDuration, sshConfigOptions.env_vars,
-        flowControlMode);
+        forwardAgent, sshSocket, keepaliveDuration, sshConfigOptions.env_vars);
     terminalClient.run(
         result.count("command") ? result["command"].as<string>() : "",
         result.count("noexit"));
