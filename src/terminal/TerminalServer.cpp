@@ -133,6 +133,11 @@ void TerminalServer::runJumpHost(
   const bool jumphostDiscard = (jumphostMode == et::FLOW_CONTROL_DISCARD);
   std::deque<Packet> pendingPackets;
   size_t pendingBytes = 0;
+  // Bytes of TERMINAL_BUFFER packets in pendingPackets. Only those are
+  // droppable in discard mode; when the queue is dominated by
+  // non-droppable control packets (e.g. port-forward data), reads must
+  // stop so the queue stays bounded.
+  size_t droppableBytes = 0;
   const size_t MAX_PENDING_BYTES = WriteBuffer::MAX_BUFFER_SIZE;
 
   while (true) {
@@ -149,10 +154,13 @@ void TerminalServer::runJumpHost(
     FD_ZERO(&rfd);
     FD_ZERO(&wfd);
 
-    // Only read from terminal if we have room in the buffer
-    // In discard mode, always read (old data will be dropped)
-    if (!jumphostFlowControlEnabled || jumphostDiscard ||
-        pendingBytes < MAX_PENDING_BYTES) {
+    // Only read from terminal if we have room in the buffer. In discard
+    // mode, room can always be made by dropping old terminal output, so
+    // only the non-droppable (control) backlog gates reading.
+    if (!jumphostFlowControlEnabled ||
+        (jumphostDiscard
+             ? (pendingBytes - droppableBytes) < MAX_PENDING_BYTES
+             : pendingBytes < MAX_PENDING_BYTES)) {
       FD_SET(terminalFd, &rfd);
     }
 
@@ -174,7 +182,11 @@ void TerminalServer::runJumpHost(
     }
     tv.tv_sec = 0;
     tv.tv_usec = 100000;
-    select(maxfd + 1, &rfd, &wfd, NULL, &tv);
+    if (select(maxfd + 1, &rfd, &wfd, NULL, &tv) < 0) {
+      // On error (e.g. EINTR, or a peer fd closed by another thread) the
+      // fd sets are unspecified; re-evaluate rather than acting on them.
+      continue;
+    }
 
     try {
       // First, drain pending packets when socket is writable
@@ -183,6 +195,10 @@ void TerminalServer::runJumpHost(
         while (!pendingPackets.empty()) {
           serverClientState->writePacket(pendingPackets.front());
           pendingBytes -= pendingPackets.front().length();
+          if (pendingPackets.front().getHeader() ==
+              TerminalPacketType::TERMINAL_BUFFER) {
+            droppableBytes -= pendingPackets.front().length();
+          }
           pendingPackets.pop_front();
 
           // Check if socket is still writable for more writes
@@ -192,10 +208,12 @@ void TerminalServer::runJumpHost(
         }
       }
 
-      // Read from terminal if buffer has room (or discard mode)
+      // Read from terminal if buffer has room (see the FD_SET above)
       if (FD_ISSET(terminalFd, &rfd) &&
-          (!jumphostFlowControlEnabled || jumphostDiscard ||
-           pendingBytes < MAX_PENDING_BYTES)) {
+          (!jumphostFlowControlEnabled ||
+           (jumphostDiscard
+                ? (pendingBytes - droppableBytes) < MAX_PENDING_BYTES
+                : pendingBytes < MAX_PENDING_BYTES))) {
         try {
           Packet packet;
           if (terminalSocketHandler->readPacket(terminalFd, &packet)) {
@@ -206,6 +224,9 @@ void TerminalServer::runJumpHost(
             } else {
               pendingPackets.push_back(packet);
               pendingBytes += packet.length();
+              if (packet.getHeader() == TerminalPacketType::TERMINAL_BUFFER) {
+                droppableBytes += packet.length();
+              }
 
               // In discard mode, drop the oldest droppable packets when
               // over the limit. Only terminal output is safe to drop:
@@ -218,6 +239,7 @@ void TerminalServer::runJumpHost(
                   if (it->getHeader() ==
                       TerminalPacketType::TERMINAL_BUFFER) {
                     pendingBytes -= it->length();
+                    droppableBytes -= it->length();
                     it = pendingPackets.erase(it);
                   } else {
                     ++it;
@@ -333,7 +355,9 @@ void TerminalServer::runTerminal(
   const bool flowControlEnabled = (flowControlMode != et::FLOW_CONTROL_NONE);
 
   TermInit termInit;
-  termInit.set_flow_control_mode(flowControlMode);
+  if (flowControlEnabled) {
+    termInit.set_flow_control_mode(flowControlMode);
+  }
   for (auto& it : environmentVariables) {
     *(termInit.add_environmentnames()) = it.first;
     *(termInit.add_environmentvalues()) = it.second;
@@ -392,7 +416,11 @@ void TerminalServer::runTerminal(
     }
     tv.tv_sec = 0;
     tv.tv_usec = 100000;
-    select(maxfd + 1, &rfd, &wfd, NULL, &tv);
+    if (select(maxfd + 1, &rfd, &wfd, NULL, &tv) < 0) {
+      // On error (e.g. EINTR, or a peer fd closed by another thread) the
+      // fd sets are unspecified; re-evaluate rather than acting on them.
+      continue;
+    }
 
     try {
       // First, try to drain the output buffer when socket is writable

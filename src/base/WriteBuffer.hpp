@@ -26,7 +26,9 @@ class WriteBuffer {
    * data the user must wait through on a slow link, so keep this small: at
    * 100KB/s, 64KB is ~0.6s of output. It only needs to absorb short bursts
    * between drain opportunities (reads are 16KB), not smooth over the
-   * network. */
+   * network. This is a soft bound: canAcceptMore() admits a whole chunk
+   * whenever size() is below the limit, so the buffer can exceed it by up
+   * to one chunk. */
   static constexpr size_t MAX_BUFFER_SIZE = 64 * 1024;  // 64KB
 
   explicit WriteBuffer(WriteBufferMode mode = WriteBufferMode::BACKPRESSURE)

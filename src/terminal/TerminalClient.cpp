@@ -23,7 +23,9 @@ TerminalClient::TerminalClient(
       new PortForwardHandler(_socketHandler, _pipeSocketHandler));
   InitialPayload payload;
   payload.set_jumphost(jumphost);
-  payload.set_flow_control_mode(flowControlMode);
+  if (flowControlMode != et::FLOW_CONTROL_NONE) {
+    payload.set_flow_control_mode(flowControlMode);
+  }
 
   for (const auto& envVar : envVars) {
     (*payload.mutable_environmentvariables())[envVar.first] = envVar.second;
@@ -297,7 +299,12 @@ void TerminalClient::run(const string& command, const bool noexit) {
 
       if (clientFd > 0 && FD_ISSET(clientFd, &rfd)) {
         VLOG(4) << "Clientfd is selected";
-        while (connection->hasData()) {
+        // Stop pulling packets once the console buffer is full: in
+        // backpressure mode the buffer would otherwise grow past its bound
+        // by however much the kernel had queued. Unprocessed packets stay
+        // in the socket buffer until the next iteration.
+        while (connection->hasData() &&
+               (!flowControlEnabled || consoleOutputBuffer.canAcceptMore())) {
           VLOG(4) << "connection has data";
           Packet packet;
           if (!connection->read(&packet)) {

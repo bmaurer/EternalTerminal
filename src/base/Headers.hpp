@@ -364,10 +364,15 @@ inline bool waitOnSocketData(int fd) {
   VLOG(4) << "Before selecting sockFd";
   const int selectResult = select(fd + 1, &fdset, NULL, NULL, &tv);
   if (selectResult < 0) {
-    if (errno == EINTR || errno == EBADF || errno == EINVAL) {
-      // EINTR: interrupted by signal. EBADF/EINVAL: fd was closed
-      // (e.g. client disconnected). Either way, caller should stop.
+    if (errno == EINTR) {
+      // Interrupted by a signal; the caller will retry.
       return false;
+    } else if (errno == EBADF || errno == EINVAL) {
+      // The fd was closed under us (e.g. peer disconnected). It will never
+      // become readable, and callers use this helper in retry loops, so
+      // returning false would spin at 100% CPU. Throw so the loop treats
+      // it as socket death.
+      throw std::runtime_error("Socket closed while waiting for data");
     } else {
       FATAL_FAIL(selectResult);
     }
@@ -391,8 +396,11 @@ inline bool waitOnSocketWritable(int fd, int64_t sec = 0, int64_t usec = 0) {
   const int selectResult = select(fd + 1, NULL, &fdset, NULL, &tv);
   if (selectResult < 0) {
     if (errno == EINTR || errno == EBADF || errno == EINVAL) {
-      // EINTR: interrupted by signal. EBADF/EINVAL: fd was closed
-      // (e.g. client disconnected). Either way, caller should stop.
+      // EINTR: interrupted by signal. EBADF/EINVAL: fd was closed (e.g.
+      // client disconnected). Returning false is safe here (unlike
+      // waitOnSocketData) because callers use this as a non-blocking
+      // "can I keep draining?" poll and stop on false; the dead socket is
+      // then discovered by the next read/write on the connection.
       return false;
     } else {
       FATAL_FAIL(selectResult);
