@@ -27,18 +27,6 @@ UserTerminalHandler::UserTerminalHandler(
 
   routerFd = ServerFifoPath::detectAndConnect(routerEndpoint, socketHandler);
 
-  {
-    // Bound the kernel buffer on the etterminal->etserver hop. When the
-    // server applies backpressure (stops reading), terminal output queues
-    // here; the default (~200KB on Linux) is seconds of stale output on a
-    // slow link. 64KB does not limit throughput on a local unix socket.
-    int sndbuf = 64 * 1024;
-    if (setsockopt(routerFd, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf,
-                   sizeof(sndbuf)) < 0) {
-      LOG(WARNING) << "Failed to set router SO_SNDBUF: " << strerror(errno);
-    }
-  }
-
   try {
     socketHandler->writePacket(
         routerFd,
@@ -63,6 +51,11 @@ void UserTerminalHandler::run() {
     for (int a = 0; a < ti.environmentnames_size(); a++) {
       setenv(ti.environmentnames(a).c_str(), ti.environmentvalues(a).c_str(),
              true);
+    }
+    if (ti.flow_control_mode() != et::FLOW_CONTROL_NONE) {
+      // The client opted into flow control: shrink the kernel buffer on the
+      // etterminal->etserver hop so backpressure holds less stale output.
+      socketHandler->minimizeKernelBuffering(routerFd);
     }
     break;
   }

@@ -125,15 +125,16 @@ void TerminalServer::runJumpHost(
       terminalFd,
       Packet(TerminalPacketType::JUMPHOST_INIT, protoToString(payload)));
 
-  // Flow control: buffer for pending jumphost output to client
-  WriteBufferMode jumphostBufferMode =
-      payload.flow_control_mode() == et::FLOW_CONTROL_DISCARD
-          ? WriteBufferMode::DISCARD
-          : WriteBufferMode::BACKPRESSURE;
+  // Flow control (only when the client opted in): queue of pending
+  // jumphost packets for the client.
+  const et::FlowControlMode jumphostMode = payload.flow_control_mode();
+  const bool jumphostFlowControlEnabled =
+      (jumphostMode != et::FLOW_CONTROL_NONE);
+  const bool jumphostDiscard = (jumphostMode == et::FLOW_CONTROL_DISCARD);
   std::deque<Packet> pendingPackets;
   size_t pendingBytes = 0;
-  const size_t MAX_PENDING_BYTES = 256 * 1024;  // 256KB limit
-  bool jumphostDiscard = (jumphostBufferMode == WriteBufferMode::DISCARD);
+  const size_t MAX_PENDING_BYTES = WriteBuffer::MAX_BUFFER_SIZE;
+  int lastTunedFd = -1;
 
   while (true) {
     {
@@ -151,13 +152,18 @@ void TerminalServer::runJumpHost(
 
     // Only read from terminal if we have room in the buffer
     // In discard mode, always read (old data will be dropped)
-    if (jumphostDiscard || pendingBytes < MAX_PENDING_BYTES) {
+    if (!jumphostFlowControlEnabled || jumphostDiscard ||
+        pendingBytes < MAX_PENDING_BYTES) {
       FD_SET(terminalFd, &rfd);
     }
 
     int maxfd = terminalFd;
     int serverClientFd = serverClientState->getSocketFd();
     if (serverClientFd > 0) {
+      if (jumphostFlowControlEnabled && serverClientFd != lastTunedFd) {
+        getSocketHandler()->minimizeKernelBuffering(serverClientFd);
+        lastTunedFd = serverClientFd;
+      }
       FD_SET(serverClientFd, &rfd);
       maxfd = max(maxfd, serverClientFd);
 
@@ -188,19 +194,35 @@ void TerminalServer::runJumpHost(
 
       // Read from terminal if buffer has room (or discard mode)
       if (FD_ISSET(terminalFd, &rfd) &&
-          (jumphostDiscard || pendingBytes < MAX_PENDING_BYTES)) {
+          (!jumphostFlowControlEnabled || jumphostDiscard ||
+           pendingBytes < MAX_PENDING_BYTES)) {
         try {
           Packet packet;
           if (terminalSocketHandler->readPacket(terminalFd, &packet)) {
-            pendingPackets.push_back(packet);
-            pendingBytes += packet.length();
+            if (!jumphostFlowControlEnabled) {
+              // Legacy path (no opt-in): forward immediately, blocking if
+              // the connection can't keep up.
+              serverClientState->writePacket(packet);
+            } else {
+              pendingPackets.push_back(packet);
+              pendingBytes += packet.length();
 
-            // In discard mode, drop oldest packets when over limit
-            if (jumphostDiscard) {
-              while (pendingBytes > MAX_PENDING_BYTES &&
-                     !pendingPackets.empty()) {
-                pendingBytes -= pendingPackets.front().length();
-                pendingPackets.pop_front();
+              // In discard mode, drop the oldest droppable packets when
+              // over the limit. Only terminal output is safe to drop:
+              // control packets (port forwarding, responses, keepalives)
+              // must be delivered or the protocol state desyncs.
+              if (jumphostDiscard) {
+                auto it = pendingPackets.begin();
+                while (pendingBytes > MAX_PENDING_BYTES &&
+                       it != pendingPackets.end()) {
+                  if (it->getHeader() ==
+                      TerminalPacketType::TERMINAL_BUFFER) {
+                    pendingBytes -= it->length();
+                    it = pendingPackets.erase(it);
+                  } else {
+                    ++it;
+                  }
+                }
               }
             }
           }
@@ -307,7 +329,11 @@ void TerminalServer::runTerminal(
   shared_ptr<SocketHandler> terminalSocketHandler =
       terminalRouter->getSocketHandler();
 
+  const et::FlowControlMode flowControlMode = payload.flow_control_mode();
+  const bool flowControlEnabled = (flowControlMode != et::FLOW_CONTROL_NONE);
+
   TermInit termInit;
+  termInit.set_flow_control_mode(flowControlMode);
   for (auto& it : environmentVariables) {
     *(termInit.add_environmentnames()) = it.first;
     *(termInit.add_environmentvalues()) = it.second;
@@ -316,12 +342,15 @@ void TerminalServer::runTerminal(
       terminalFd,
       Packet(TerminalPacketType::TERMINAL_INIT, protoToString(termInit)));
 
-  // Flow control: buffer for pending terminal output to client
-  WriteBufferMode bufferMode =
-      payload.flow_control_mode() == et::FLOW_CONTROL_DISCARD
-          ? WriteBufferMode::DISCARD
-          : WriteBufferMode::BACKPRESSURE;
-  WriteBuffer terminalOutputBuffer(bufferMode);
+  // Flow control: buffer for pending terminal output to client. Unused when
+  // the client didn't opt in (FLOW_CONTROL_NONE): output is then written
+  // straight to the connection, exactly like before this feature existed.
+  WriteBuffer terminalOutputBuffer(flowControlMode == et::FLOW_CONTROL_DISCARD
+                                       ? WriteBufferMode::DISCARD
+                                       : WriteBufferMode::BACKPRESSURE);
+  // The connection fd changes on reconnect and kernel tuning is per-fd, so
+  // track the last fd tuned and reapply when it changes.
+  int lastTunedFd = -1;
 
   while (run) {
     {
@@ -341,18 +370,22 @@ void TerminalServer::runTerminal(
 
     // Only read from terminal if we have room in the output buffer
     // This is key for backpressure: if client is slow, we stop reading
-    if (terminalOutputBuffer.canAcceptMore()) {
+    if (!flowControlEnabled || terminalOutputBuffer.canAcceptMore()) {
       FD_SET(terminalFd, &rfd);
     }
 
     int maxfd = terminalFd;
     int serverClientFd = serverClientState->getSocketFd();
     if (serverClientFd > 0) {
+      if (flowControlEnabled && serverClientFd != lastTunedFd) {
+        serverSocketHandler->minimizeKernelBuffering(serverClientFd);
+        lastTunedFd = serverClientFd;
+      }
       FD_SET(serverClientFd, &rfd);
       maxfd = max(maxfd, serverClientFd);
 
       // Monitor write availability if we have pending data
-      if (terminalOutputBuffer.hasPendingData()) {
+      if (flowControlEnabled && terminalOutputBuffer.hasPendingData()) {
         FD_SET(serverClientFd, &wfd);
       }
     }
@@ -363,7 +396,8 @@ void TerminalServer::runTerminal(
     try {
       // First, try to drain the output buffer when socket is writable
       // This should be done before reading more data
-      if (serverClientFd > 0 && FD_ISSET(serverClientFd, &wfd) &&
+      if (flowControlEnabled && serverClientFd > 0 &&
+          FD_ISSET(serverClientFd, &wfd) &&
           terminalOutputBuffer.hasPendingData()) {
         // Drain as much as possible from the buffer
         while (terminalOutputBuffer.hasPendingData()) {
@@ -390,15 +424,25 @@ void TerminalServer::runTerminal(
 
       // Check for data to receive from terminal
       // Only if we have room in the buffer (backpressure)
-      if (FD_ISSET(terminalFd, &rfd) && terminalOutputBuffer.canAcceptMore()) {
+      if (FD_ISSET(terminalFd, &rfd) &&
+          (!flowControlEnabled || terminalOutputBuffer.canAcceptMore())) {
         // Read from terminal and buffer for later write to client
         memset(b, 0, BUF_SIZE);
         int rc = read(terminalFd, b, BUF_SIZE);
         if (rc > 0) {
           VLOG(2) << "Read bytes from terminal: " << rc
                   << " buffer size: " << terminalOutputBuffer.size();
-          // Buffer the data for flow-controlled sending
-          terminalOutputBuffer.enqueue(string(b, rc));
+          if (flowControlEnabled) {
+            // Buffer the data for flow-controlled sending
+            terminalOutputBuffer.enqueue(string(b, rc));
+          } else {
+            // Legacy path (no opt-in): write straight to the client,
+            // blocking if the connection can't keep up.
+            et::TerminalBuffer tb;
+            tb.set_buffer(string(b, rc));
+            serverClientState->writePacket(Packet(
+                TerminalPacketType::TERMINAL_BUFFER, protoToString(tb)));
+          }
         } else if (rc == 0) {
           LOG(INFO) << "Terminal session ended";
           run = false;

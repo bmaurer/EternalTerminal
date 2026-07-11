@@ -13,7 +13,6 @@
 #include "ServerConnection.hpp"
 #include "SshSetupHandler.hpp"
 #include "TcpSocketHandler.hpp"
-#include "WriteBuffer.hpp"
 
 namespace et {
 /**
@@ -34,8 +33,7 @@ class TerminalClient {
                  const string& reverseTunnels, bool forwardSshAgent,
                  const string& identityAgent, int _keepaliveDuration,
                  const vector<pair<string, string>>& envVars,
-                 WriteBufferMode _flowControlMode =
-                     WriteBufferMode::BACKPRESSURE);
+                 et::FlowControlMode _flowControlMode = et::FLOW_CONTROL_NONE);
   /** @brief Tears down the client, closing sockets and stopping background
    * threads. */
   virtual ~TerminalClient();
@@ -64,7 +62,7 @@ class TerminalClient {
   /** @brief Keepalive interval (seconds) sent to the server. */
   int keepaliveDuration;
   /** @brief Flow control mode for output buffering. */
-  WriteBufferMode flowControlMode;
+  et::FlowControlMode flowControlMode;
 };
 
 }  // namespace et

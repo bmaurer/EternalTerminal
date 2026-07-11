@@ -10,7 +10,6 @@
 #include "TerminalClient.hpp"
 #include "TunnelUtils.hpp"
 #include "WinsockContext.hpp"
-#include "WriteBuffer.hpp"
 
 using namespace et;
 
@@ -155,12 +154,14 @@ int main(int argc, char** argv) {
          "id/passkey). Start etterminal manually before connecting.",
          cxxopts::value<std::string>())  //
         ("flow-control",
-         "Flow control mode: 'backpressure' (default; lossless: when the "
-         "client can't keep up, the remote process is paused, like plain "
-         "ssh) or 'discard' (drop the oldest pending output so the remote "
-         "process never stalls and the display stays close to real time; "
-         "not for consumers that require every byte, e.g. tmux -CC)",
-         cxxopts::value<std::string>()->default_value("backpressure"));
+         "Flow control mode: 'none' (default; legacy behavior, unchanged), "
+         "'backpressure' (lossless: bounded, tuned buffers keep Ctrl-C "
+         "responsive on a slow link; when the client can't keep up the "
+         "remote process is paused, like plain ssh), or 'discard' (drop "
+         "the oldest pending output so the remote process never stalls "
+         "and the display stays close to real time; not for consumers "
+         "that require every byte, e.g. tmux -CC)",
+         cxxopts::value<std::string>()->default_value("none"));
 
     options.parse_positional({"host"});
     auto result = options.parse(argc, argv);
@@ -408,13 +409,16 @@ int main(int argc, char** argv) {
           etterminal_path, serverFifo, ssh_options);
     }
 
-    WriteBufferMode flowControlMode = WriteBufferMode::BACKPRESSURE;
+    et::FlowControlMode flowControlMode = et::FLOW_CONTROL_NONE;
     string flowControlStr = result["flow-control"].as<string>();
-    if (flowControlStr == "discard") {
-      flowControlMode = WriteBufferMode::DISCARD;
-    } else if (flowControlStr != "backpressure") {
+    if (flowControlStr == "backpressure") {
+      flowControlMode = et::FLOW_CONTROL_BACKPRESSURE;
+    } else if (flowControlStr == "discard") {
+      flowControlMode = et::FLOW_CONTROL_DISCARD;
+    } else if (flowControlStr != "none") {
       CLOG(INFO, "stdout") << "Invalid flow-control mode: " << flowControlStr
-                           << ". Must be 'discard' or 'backpressure'." << endl;
+                           << ". Must be 'none', 'backpressure', or 'discard'."
+                           << endl;
       exit(1);
     }
 
