@@ -14,19 +14,25 @@ deliver it, ET has no mechanism to manage the mismatch. The result:
 ## The fix, in two parts
 
 **Part 1: application-level flow control.** Terminal output is staged in a
-bounded `WriteBuffer` between the PTY and the client socket, with two modes:
+bounded `WriteBuffer` between the PTY and the client socket. Flow control
+is strictly opt-in; users who don't opt in are completely unchanged:
 
-- `--flow-control backpressure` (default): when the buffer fills, stop
-  reading from the PTY. The remote process pauses, exactly like plain ssh.
-  Lossless — required for correctness-sensitive consumers like `tmux -CC`.
+- `--flow-control none` (default): the exact pre-feature code path. Output
+  is written straight to the connection with blocking writes; no
+  application buffering, no kernel socket tuning.
+- `--flow-control backpressure`: when the buffer fills, stop reading from
+  the PTY. The remote process pauses, exactly like plain ssh. Lossless —
+  required for correctness-sensitive consumers like `tmux -CC`.
 - `--flow-control discard`: when the buffer fills, drop the *oldest* pending
   output. The remote process never stalls and the display stays close to
   real time. Old output is lost from scrollback while the link is saturated.
 
-**Part 2: kernel buffer tuning.** Flow control only helps if pending data
-actually waits in the application buffer. An audit of every buffer on the
-path found kernel-side reservoirs that were absorbing the backlog downstream
-of any point where ET could drop or gate it:
+**Part 2: kernel buffer tuning (opt-in sessions only).** Flow control only
+helps if pending data actually waits in the application buffer. An audit of
+every buffer on the path found kernel-side reservoirs that were absorbing
+the backlog downstream of any point where ET could drop or gate it. These
+are tuned per-session, only when the client opted in (the server learns the
+mode from InitialPayload; etterminal learns it via TermInit):
 
 | Buffer | Untuned size | Fix |
 |---|---|---|
@@ -69,12 +75,18 @@ every 10ms (~2.7MB/s raw output — 27x the proxy's capacity).
 | scenario | display lag @30s | process | Ctrl-C -> prompt |
 |---|---|---|---|
 | trunk (`ee8ddc21c`) | 31.4s, growing ~1s/s | throttled to link rate | **56.4s** |
-| backpressure, untuned kernel buffers | 31.5s, growing | throttled | 53.8s |
-| discard, untuned kernel buffers | 24.4s, growing | full speed | 28.0s |
-| **backpressure + tuning (new default)** | **~2.5s, bounded** | throttled (lossless) | **3.1s** |
-| **discard + tuning** | **~1.2s, bounded** | **full speed** | **2.1s** |
+| `none` (HEAD default — status quo) | 31.8s, growing ~1s/s | throttled to link rate | **115.7s** |
+| backpressure, no kernel tuning | 31.5s, growing | throttled | 53.8s |
+| discard, no kernel tuning | 24.4s, growing | full speed | 28.0s |
+| **backpressure + tuning (opt-in)** | **~2.5s, bounded** | throttled (lossless) | **2.1-3.1s** |
+| **discard + tuning (opt-in)** | **~1.2s, bounded** | **full speed** | **2.1s** |
 
-The untuned rows show why the kernel tuning is essential: with the default
+The `none` row is the default build with no flag: it matches trunk's
+behavior class (unbounded kernel queue, growing lag, Ctrl-C takes however
+long the queue takes to drain — high variance run to run). This is
+deliberate: current users see zero change unless they opt in.
+
+The no-kernel-tuning rows show why the tuning is essential: with the default
 autotuned TCP send buffer, megabytes of stale output pile up in the kernel
 where the WriteBuffer can neither gate nor drop them, and both modes are
 barely better than trunk. With `TCP_NOTSENT_LOWAT`, display lag stops growing
@@ -93,40 +105,40 @@ etserver stayed alive through all scenarios.
 
 ### Bulk throughput (localhost, no throttle, 30MB through the full pipeline)
 
-| build | throughput (avg of 3) |
-|---|---|
-| trunk | ~42.7 MB/s |
-| tuned, backpressure | ~33.6 MB/s |
+Measurements are noisy on a shared devvm (trunk build: 40-47 MB/s across
+runs; this branch: 20-41 MB/s across modes, with `none`, `backpressure`,
+and `discard` overlapping run-to-run). Two things hold: all modes stay in
+the tens of MB/s, far beyond any realistic terminal workload, and the
+default `none` path is the identical pre-feature code, so non-opted-in
+users cannot regress. On real WAN links throughput is BDP-bound, which
+`TCP_NOTSENT_LOWAT` does not restrict.
 
-The small kernel queues cost ~20% of bulk throughput on a localhost-class
-link (more syscalls per byte; the pipeline stalls briefly between refills).
-33 MB/s remains far beyond any realistic terminal workload, and on real WAN
-links throughput is BDP-bound, which `TCP_NOTSENT_LOWAT` does not restrict.
+## Why the default is `none`
 
-## Why the defaults are what they are
+The requirement is that current users are no worse off — the strongest
+form of that is byte-identical behavior, so the default (CLI flag and
+proto field alike, which also covers old clients talking to new servers)
+is the legacy path with stock kernel buffering.
 
-Backpressure is the default because it preserves today's semantics: nothing
-is ever dropped, and a slow client pauses the producer, exactly like plain
-ssh over a slow link. Current users (including `tmux -CC` users, for whom
-dropped bytes mean state corruption) are strictly better off: same
-guarantees, but Ctrl-C now takes ~3s instead of ~56s. The proto default also
-governs what servers assume for old clients that don't send the field, so it
-must be the lossless mode.
-
-Discard is opt-in for users who prefer freshness over completeness — the
+`backpressure` is the conservative opt-in: it keeps today's lossless
+semantics (a slow client pauses the producer, exactly like plain ssh; safe
+for `tmux -CC`) while bounding the queue so Ctrl-C takes ~3s instead of
+minutes. `discard` is the opt-in for freshness over completeness — the
 `cat /dev/zero | base64` case from the issue, ML training jobs, builds:
 the process never stalls (even fully disconnected) and the display tracks
-real time. The cost is that saturated-link output is missing from scrollback.
+real time. The cost is that saturated-link output is missing from
+scrollback.
 
 ## What this means for real-world use
 
-- **ML training / long build, laptop closed**: with backpressure (default),
-  the job pauses when buffers fill — same as today. With `--flow-control
-  discard`, the job keeps running at full speed and you see current output
-  when you reconnect.
-- **`cat` a huge file over a slow link, then Ctrl-C**: prompt returns in ~2-3s
-  in both modes (was: up to a minute).
-- **tmux -CC**: keep the default. Every byte is delivered.
+- **ML training / long build, laptop closed**: with `none` or
+  `backpressure`, the job pauses when buffers fill — same as today. With
+  `--flow-control discard`, the job keeps running at full speed and you see
+  current output when you reconnect.
+- **`cat` a huge file over a slow link, then Ctrl-C**: prompt returns in
+  ~2-3s in either opt-in mode (default/today: a minute or more).
+- **tmux -CC**: use `none` (default) or `backpressure`. Every byte is
+  delivered.
 
 ## Reproducing These Results
 
@@ -134,7 +146,7 @@ real time. The cost is that saturated-link output is missing from scrollback.
 cd /path/to/EternalTerminal/build
 cmake -DDISABLE_VCPKG=ON -GNinja .. && ninja -j4
 
-# One scenario (trunk|backpressure|discard) [--disconnect]
+# One scenario (trunk|none|backpressure|discard) [--disconnect]
 bash test/e2e/do_scenario.sh discard --outdir /tmp/et_e2e
 bash test/e2e/do_scenario.sh discard --disconnect --outdir /tmp/et_e2e
 
