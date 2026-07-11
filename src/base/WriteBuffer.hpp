@@ -21,9 +21,13 @@ enum class WriteBufferMode {
  */
 class WriteBuffer {
  public:
-  /** @brief Maximum bytes to buffer before applying backpressure or discarding.
-   */
-  static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB
+  /** @brief Maximum bytes to buffer before applying backpressure or
+   * discarding. Every byte held here (or in any buffer downstream) is stale
+   * data the user must wait through on a slow link, so keep this small: at
+   * 100KB/s, 64KB is ~0.6s of output. It only needs to absorb short bursts
+   * between drain opportunities (reads are 16KB), not smooth over the
+   * network. */
+  static constexpr size_t MAX_BUFFER_SIZE = 64 * 1024;  // 64KB
 
   explicit WriteBuffer(WriteBufferMode mode = WriteBufferMode::BACKPRESSURE)
       : mode(mode), totalBytes(0), writeOffset(0) {}
