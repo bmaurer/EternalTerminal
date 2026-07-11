@@ -47,7 +47,11 @@ cleanup() {
     kill -9 $(lsof -t -i:4444 2>/dev/null) $(lsof -t -i:4445 2>/dev/null) 2>/dev/null
     pkill -9 -f "etterminal.*$ID" 2>/dev/null
     rm -f /tmp/et_e2e_demo.fifo "$ETMUX" "$SIDECAR" "$PROXY_LOG"
-    cd "$REPO" && git checkout HEAD -- . 2>/dev/null
+    # Restore only the dirs the trunk scenario checks out. Do NOT use
+    # "git checkout HEAD -- ." here: it clobbers unrelated uncommitted work
+    # in the tree (this exact mistake once reverted the flow-control
+    # implementation itself).
+    cd "$REPO" && git checkout HEAD -- src/ proto/ test/integration_tests/ test/unit_tests/ 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -212,6 +216,30 @@ print(f'{(cl-pl)/dt:.0f}' if dt > 0.1 else '0')" 2>/dev/null || true)
     echo "{\"t\":$ELAPSED,\"display_lag\":$DLAG,\"process_lag\":$PLAG,\"lines_sec\":$LINES_SEC,\"connected\":$CONNECTED}" >> "$JSONL"
 done
 
+# --- Ctrl-C responsiveness ---
+# This is the original issue 631 complaint: with a saturated link, ^C takes
+# a very long time to visibly take effect because stale queued output must
+# drain before the prompt reappears.
+echo ""
+echo -e "${C}--- Ctrl-C responsiveness ---${N}"
+CC_T0=$(python3 -c 'import time; print(f"{time.time():.3f}")')
+tmux -S "$ETMUX" send-keys C-c
+CTRL_C_LATENCY="null"
+for i in $(seq 1 240); do
+    sleep 0.5
+    LAST_LINES=$(tmux -S "$ETMUX" capture-pane -p 2>/dev/null | sed '/^$/d' | tail -2)
+    if echo "$LAST_LINES" | grep -qF '~]$'; then
+        CTRL_C_LATENCY=$(python3 -c "import time; print(f'{time.time() - $CC_T0:.1f}')")
+        break
+    fi
+done
+if [ "$CTRL_C_LATENCY" = "null" ]; then
+    echo -e "${R}Ctrl-C: prompt did not return within 120s${N}"
+else
+    echo -e "Ctrl-C to prompt: ${G}${CTRL_C_LATENCY}s${N}"
+fi
+echo "{\"event\":\"ctrl_c\",\"latency\":$CTRL_C_LATENCY}" >> "$JSONL"
+
 echo ""
 ES_ALIVE=$(lsof -i:4444 2>/dev/null | grep -c LISTEN)
 [ "$ES_ALIVE" -gt 0 ] && echo -e "etserver: ${G}alive${N}" || echo -e "etserver: ${R}CRASHED${N}"
@@ -227,7 +255,8 @@ meta = {
     'commit': '$COMMIT_DESC',
     'et_command': '$ET_CMD',
     'proxy_rate': $RATE,
-    'etserver_alive': $( [ \"$ES_ALIVE\" -gt 0 ] && echo True || echo False ),
+    'ctrl_c_latency': $CTRL_C_LATENCY,
+    'etserver_alive': $( [ "$ES_ALIVE" -gt 0 ] && echo True || echo False ),
 }
 with open('$OUTDIR/${SCENARIO}_meta.json', 'w') as f:
     json.dump(meta, f, indent=2)

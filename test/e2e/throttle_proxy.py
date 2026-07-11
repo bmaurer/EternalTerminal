@@ -97,7 +97,14 @@ def handle(cli, addr):
     stop = threading.Event()
     try:
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # Clamp the receive buffer BEFORE connect (window scaling is
+        # negotiated at handshake). Without this, the proxy's kernel rcvbuf
+        # autotunes to multiple MB and silently absorbs the server's output,
+        # hiding buffer bloat that a real slow link would push back on.
+        # 64KB ~= 0.64s of queue at the default 100KB/s rate.
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024)
         srv.connect(("127.0.0.1", TARGET_PORT))
+        log(f"srv rcvbuf={srv.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)}")
         with lock:
             active_connections.append((cli, srv, stop))
         t1 = threading.Thread(
