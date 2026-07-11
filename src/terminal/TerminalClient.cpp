@@ -357,11 +357,12 @@ void TerminalClient::run(const string& command, const bool noexit) {
 
       if (clientFd > 0 && keepaliveTime < time(NULL)) {
         keepaliveTime = time(NULL) + keepaliveDuration;
-        if (waitingOnKeepalive) {
+        if (waitingOnKeepalive &&
+            !(flowControlEnabled && consoleOutputBuffer.hasPendingData())) {
           LOG(INFO) << "Missed a keepalive, killing connection.";
           connection->closeSocketAndMaybeReconnect();
           waitingOnKeepalive = false;
-        } else {
+        } else if (!waitingOnKeepalive) {
           LOG(INFO) << "Writing keepalive packet";
           connection->writePacket(Packet(TerminalPacketType::KEEP_ALIVE, ""));
           waitingOnKeepalive = true;

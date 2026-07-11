@@ -182,9 +182,12 @@ void TerminalServer::runJumpHost(
     }
     tv.tv_sec = 0;
     tv.tv_usec = 100000;
-    if (select(maxfd + 1, &rfd, &wfd, NULL, &tv) < 0) {
-      // On error (e.g. EINTR, or a peer fd closed by another thread) the
-      // fd sets are unspecified; re-evaluate rather than acting on them.
+    if (select(maxfd + 1, &rfd, &wfd, NULL, &tv) < 0 && errno == EINTR) {
+      // Interrupted by a signal: the fd sets are unspecified, so
+      // re-evaluate rather than acting on them. Other errors (e.g. a fd
+      // closed by another thread) fall through: the read/write paths then
+      // surface the dead fd as a session-ending error instead of this
+      // loop spinning on select() failures forever.
       continue;
     }
 
@@ -416,9 +419,12 @@ void TerminalServer::runTerminal(
     }
     tv.tv_sec = 0;
     tv.tv_usec = 100000;
-    if (select(maxfd + 1, &rfd, &wfd, NULL, &tv) < 0) {
-      // On error (e.g. EINTR, or a peer fd closed by another thread) the
-      // fd sets are unspecified; re-evaluate rather than acting on them.
+    if (select(maxfd + 1, &rfd, &wfd, NULL, &tv) < 0 && errno == EINTR) {
+      // Interrupted by a signal: the fd sets are unspecified, so
+      // re-evaluate rather than acting on them. Other errors (e.g. a fd
+      // closed by another thread) fall through: the read/write paths then
+      // surface the dead fd as a session-ending error instead of this
+      // loop spinning on select() failures forever.
       continue;
     }
 
