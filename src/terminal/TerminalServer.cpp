@@ -134,7 +134,6 @@ void TerminalServer::runJumpHost(
   std::deque<Packet> pendingPackets;
   size_t pendingBytes = 0;
   const size_t MAX_PENDING_BYTES = WriteBuffer::MAX_BUFFER_SIZE;
-  int lastTunedFd = -1;
 
   while (true) {
     {
@@ -160,9 +159,10 @@ void TerminalServer::runJumpHost(
     int maxfd = terminalFd;
     int serverClientFd = serverClientState->getSocketFd();
     if (serverClientFd > 0) {
-      if (jumphostFlowControlEnabled && serverClientFd != lastTunedFd) {
+      if (jumphostFlowControlEnabled) {
+        // Reapply every iteration; see runTerminal for why fd tracking is
+        // not reliable across reconnects.
         getSocketHandler()->minimizeKernelBuffering(serverClientFd);
-        lastTunedFd = serverClientFd;
       }
       FD_SET(serverClientFd, &rfd);
       maxfd = max(maxfd, serverClientFd);
@@ -348,9 +348,7 @@ void TerminalServer::runTerminal(
   WriteBuffer terminalOutputBuffer(flowControlMode == et::FLOW_CONTROL_DISCARD
                                        ? WriteBufferMode::DISCARD
                                        : WriteBufferMode::BACKPRESSURE);
-  // The connection fd changes on reconnect and kernel tuning is per-fd, so
-  // track the last fd tuned and reapply when it changes.
-  int lastTunedFd = -1;
+
 
   while (run) {
     {
@@ -377,9 +375,12 @@ void TerminalServer::runTerminal(
     int maxfd = terminalFd;
     int serverClientFd = serverClientState->getSocketFd();
     if (serverClientFd > 0) {
-      if (flowControlEnabled && serverClientFd != lastTunedFd) {
+      if (flowControlEnabled) {
+        // Reapply every iteration: the connection gets a brand-new socket
+        // on reconnect, kernel tuning is per-socket, and fd numbers are
+        // reused, so there is no reliable way to detect the swap from the
+        // fd alone. The setsockopt is idempotent and costs ~1us.
         serverSocketHandler->minimizeKernelBuffering(serverClientFd);
-        lastTunedFd = serverClientFd;
       }
       FD_SET(serverClientFd, &rfd);
       maxfd = max(maxfd, serverClientFd);

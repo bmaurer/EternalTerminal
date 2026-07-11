@@ -32,6 +32,15 @@ SIDECAR="/tmp/et_e2e_sidecar_$$.txt"
 ETMUX="/tmp/et_e2e_client_$$.sock"
 PROXY_LOG="/tmp/et_e2e_proxy_$$.log"
 
+# The cleanup trap restores src/, proto/, and test dirs to HEAD (the trunk
+# scenario checks out old sources there). Any uncommitted work in those
+# paths would be silently destroyed, so refuse to run on a dirty tree.
+if ! git -C "$REPO" diff --quiet -- src/ proto/ test/integration_tests/ test/unit_tests/ 2>/dev/null; then
+    echo "ERROR: uncommitted changes under src/, proto/, or test/. Commit them first:"
+    git -C "$REPO" status --short -- src/ proto/ test/integration_tests/ test/unit_tests/ | head
+    exit 1
+fi
+
 mkdir -p "$OUTDIR"
 
 SCENARIO="$MODE"
