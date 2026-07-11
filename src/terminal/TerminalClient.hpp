@@ -34,7 +34,8 @@ class TerminalClient {
                  const string& reverseTunnels, bool forwardSshAgent,
                  const string& identityAgent, int _keepaliveDuration,
                  const vector<pair<string, string>>& envVars,
-                 WriteBufferMode _flowControlMode = WriteBufferMode::DISCARD);
+                 WriteBufferMode _flowControlMode =
+                     WriteBufferMode::BACKPRESSURE);
   /** @brief Tears down the client, closing sockets and stopping background
    * threads. */
   virtual ~TerminalClient();

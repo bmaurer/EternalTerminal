@@ -155,9 +155,12 @@ int main(int argc, char** argv) {
          "id/passkey). Start etterminal manually before connecting.",
          cxxopts::value<std::string>())  //
         ("flow-control",
-         "Flow control mode: 'discard' (default, processes never stall) or "
-         "'backpressure' (stop process output when client is slow)",
-         cxxopts::value<std::string>()->default_value("discard"));
+         "Flow control mode: 'backpressure' (default; lossless: when the "
+         "client can't keep up, the remote process is paused, like plain "
+         "ssh) or 'discard' (drop the oldest pending output so the remote "
+         "process never stalls and the display stays close to real time; "
+         "not for consumers that require every byte, e.g. tmux -CC)",
+         cxxopts::value<std::string>()->default_value("backpressure"));
 
     options.parse_positional({"host"});
     auto result = options.parse(argc, argv);
@@ -405,11 +408,11 @@ int main(int argc, char** argv) {
           etterminal_path, serverFifo, ssh_options);
     }
 
-    WriteBufferMode flowControlMode = WriteBufferMode::DISCARD;
+    WriteBufferMode flowControlMode = WriteBufferMode::BACKPRESSURE;
     string flowControlStr = result["flow-control"].as<string>();
-    if (flowControlStr == "backpressure") {
-      flowControlMode = WriteBufferMode::BACKPRESSURE;
-    } else if (flowControlStr != "discard") {
+    if (flowControlStr == "discard") {
+      flowControlMode = WriteBufferMode::DISCARD;
+    } else if (flowControlStr != "backpressure") {
       CLOG(INFO, "stdout") << "Invalid flow-control mode: " << flowControlStr
                            << ". Must be 'discard' or 'backpressure'." << endl;
       exit(1);
