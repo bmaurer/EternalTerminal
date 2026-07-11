@@ -2,6 +2,7 @@
 
 #include "TelemetryService.hpp"
 #include "TunnelUtils.hpp"
+#include "WriteBuffer.hpp"
 
 namespace et {
 
@@ -12,14 +13,19 @@ TerminalClient::TerminalClient(
     const string& passkey, shared_ptr<Console> _console, bool jumphost,
     const string& tunnels, const string& reverseTunnels, bool forwardSshAgent,
     const string& identityAgent, int _keepaliveDuration,
-    const vector<pair<string, string>>& envVars)
+    const vector<pair<string, string>>& envVars,
+    WriteBufferMode _flowControlMode)
     : console(_console),
       shuttingDown(false),
-      keepaliveDuration(_keepaliveDuration) {
+      keepaliveDuration(_keepaliveDuration),
+      flowControlMode(_flowControlMode) {
   portForwardHandler = shared_ptr<PortForwardHandler>(
       new PortForwardHandler(_socketHandler, _pipeSocketHandler));
   InitialPayload payload;
   payload.set_jumphost(jumphost);
+  payload.set_flow_control_mode(flowControlMode == WriteBufferMode::DISCARD
+                                    ? et::FLOW_CONTROL_DISCARD
+                                    : et::FLOW_CONTROL_BACKPRESSURE);
 
   for (const auto& envVar : envVars) {
     (*payload.mutable_environmentvariables())[envVar.first] = envVar.second;
@@ -173,6 +179,9 @@ void TerminalClient::run(const string& command, const bool noexit) {
 
   TerminalInfo lastTerminalInfo;
 
+  // Flow control: buffer for pending console output
+  WriteBuffer consoleOutputBuffer(flowControlMode);
+
   if (!console.get()) {
     // NOTE: ../../scripts/ssh-et relies on the wording of this message, so if
     // you change it please update it as well.
@@ -201,8 +210,12 @@ void TerminalClient::run(const string& command, const bool noexit) {
     }
     int clientFd = connection->getSocketFd();
     if (clientFd > 0) {
-      FD_SET(clientFd, &rfd);
-      maxfd = max(maxfd, clientFd);
+      // Only read from server if console output buffer has room
+      // This creates backpressure when the console is slow
+      if (consoleOutputBuffer.canAcceptMore()) {
+        FD_SET(clientFd, &rfd);
+        maxfd = max(maxfd, clientFd);
+      }
     }
     // TODO: set port forward sockets as well for performance reasons.
     tv.tv_sec = 0;
@@ -210,6 +223,23 @@ void TerminalClient::run(const string& command, const bool noexit) {
     select(maxfd + 1, &rfd, NULL, NULL, &tv);
 
     try {
+      // First, drain the console output buffer
+      // This should be done before reading more data
+      if (console && consoleOutputBuffer.hasPendingData()) {
+        // Drain as much as possible from the buffer
+        while (consoleOutputBuffer.hasPendingData()) {
+          size_t count;
+          const char* data = consoleOutputBuffer.peekData(&count);
+          if (data == nullptr || count == 0) break;
+
+          // Write to console (may block if console is slow)
+          string s(data, count);
+          VLOG(2) << "Draining buffered bytes to console: " << count;
+          console->write(s);
+          consoleOutputBuffer.consume(count);
+        }
+      }
+
       if (console) {
         // Check for data to send.
         if (FD_ISSET(consoleFd, &rfd)) {
@@ -286,7 +316,7 @@ void TerminalClient::run(const string& command, const bool noexit) {
             case et::TerminalPacketType::TERMINAL_BUFFER: {
               if (console) {
                 VLOG(3) << "Got terminal buffer";
-                // Read from the server and write to our fake terminal
+                // Read from the server and buffer for later write to console
                 et::TerminalBuffer tb =
                     stringToProto<et::TerminalBuffer>(packet.getPayload());
                 const string& s = tb.buffer();
@@ -294,7 +324,8 @@ void TerminalClient::run(const string& command, const bool noexit) {
                 // VLOG(1) << "Got byte: " << int(b) << " " << char(b) << " " <<
                 // connection->getReader()->getSequenceNumber();
                 keepaliveTime = time(NULL) + keepaliveDuration;
-                console->write(s);
+                // Buffer data for flow-controlled sending to console
+                consoleOutputBuffer.enqueue(s);
               }
               break;
             }
