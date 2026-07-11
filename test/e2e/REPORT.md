@@ -6,158 +6,141 @@ When a process inside an ET session produces output faster than the network can
 deliver it, ET has no mechanism to manage the mismatch. The result:
 
 1. The terminal display falls progressively behind real time
-2. Ctrl-C is delayed because stale data must drain before the interrupt is seen
-3. In the worst case (laptop disconnect, wifi drop), long-running jobs freeze
+2. Ctrl-C appears to do nothing: the interrupt is delivered, but tens of
+   seconds of stale queued output must drain before the prompt reappears
+3. In the worst case (laptop sleep, wifi drop), long-running jobs freeze
    entirely because the PTY kernel buffer fills up and `write()` blocks
+
+## The fix, in two parts
+
+**Part 1: application-level flow control.** Terminal output is staged in a
+bounded `WriteBuffer` between the PTY and the client socket, with two modes:
+
+- `--flow-control backpressure` (default): when the buffer fills, stop
+  reading from the PTY. The remote process pauses, exactly like plain ssh.
+  Lossless — required for correctness-sensitive consumers like `tmux -CC`.
+- `--flow-control discard`: when the buffer fills, drop the *oldest* pending
+  output. The remote process never stalls and the display stays close to
+  real time. Old output is lost from scrollback while the link is saturated.
+
+**Part 2: kernel buffer tuning.** Flow control only helps if pending data
+actually waits in the application buffer. An audit of every buffer on the
+path found kernel-side reservoirs that were absorbing the backlog downstream
+of any point where ET could drop or gate it:
+
+| Buffer | Untuned size | Fix |
+|---|---|---|
+| TCP send buffer (server->client) | autotunes to multi-MB (20MB max on this host) | `TCP_NOTSENT_LOWAT=32KB`: select() only reports writable when <32KB is unsent, so the backlog stays in the WriteBuffer. In-flight (sent-but-unacked) data is not limited, preserving high-BDP throughput. |
+| ET WriteBuffer | 256KB | 64KB — only needs to absorb bursts between drain opportunities |
+| etterminal->etserver unix socket | ~200KB (net.core.wmem_default) | `SO_SNDBUF=64KB` on the sender side |
+| PTY kernel buffer | ~64KB | not tunable from userspace; part of the fixed lag floor |
+| BackedWriter backup (64MB) | n/a | reconnect recovery only; never delays live data |
 
 ## Test Setup
 
 ```
-print_timestamps.py ──> PTY ──> etterminal ──> etserver ──[TCP]──> throttle_proxy ──[TCP]──> et client ──> terminal
-                                                           100KB/s
+print_timestamps.py -> PTY -> etterminal -> etserver --[TCP]--> throttle_proxy --[TCP]--> et client -> terminal
+                                                       100KB/s
 ```
 
 All components run on a single machine via `--idpasskey` (no SSH). A userspace
-TCP throttle proxy between etserver and the et client limits the server-to-client
-throughput to 100KB/s. This creates the same conditions as a slow WAN link: the
-ET server produces data far faster than the client can consume it.
+TCP throttle proxy between etserver and the et client limits server-to-client
+throughput to 100KB/s. The proxy clamps `SO_RCVBUF` on its server-facing
+socket to 64KB so it models a real slow link instead of silently absorbing
+megabytes in its own autotuned receive buffer.
 
 **Workload**: `print_timestamps.py` prints 1000 timestamped lines in a burst
 every 10ms (~2.7MB/s raw output — 27x the proxy's capacity).
 
-**Two metrics are measured every 10 seconds for 30 seconds:**
+**Metrics** (sampled every 5s; Ctrl-C sent after the workload):
 
-- **display_lag**: The difference between the timestamp currently visible on the
-  client's terminal and the actual wall clock time. This tells you how stale the
-  information on your screen is.
+- **display_lag**: wall clock minus the newest timestamp visible on the
+  client's terminal — how stale the screen is.
+- **process_lag**: wall clock minus the timestamp the producer most recently
+  wrote (via a sidecar file that bypasses ET). Large values mean the process
+  is blocked in `write()`.
+- **ctrl_c_latency**: time from sending Ctrl-C until the shell prompt is
+  visible again. This is the original issue 631 complaint.
 
-- **process_lag**: The difference between the timestamp the producing process
-  most recently wrote (to a sidecar file that bypasses ET) and wall clock time.
-  If near zero, the process is running freely. If large, the process is blocked
-  on `write()` to its stdout — it has been stalled by backpressure from the
-  terminal pipeline.
+## Results (2026-07-10, devvm, Linux 6.13)
 
-## Raw Results
+### Slow link, 30s saturation
 
-```
-                 disp@10s   disp@20s   disp@30s    proc@10s     proc@20s     proc@30s     etserver
-TRUNK            9.6s       19.8s      29.6s       1.0s STALL   0.7s         0.0s         alive
-BACKPRESSURE     9.6s       19.4s      29.3s       2.0s STALL   0.0s         0.9s         alive
-DISCARD          9.6s       19.5s      29.2s       0.0s run     0.0s run     0.0s run     alive
-```
+| scenario | display lag @30s | process | Ctrl-C -> prompt |
+|---|---|---|---|
+| trunk (`ee8ddc21c`) | 31.4s, growing ~1s/s | throttled to link rate | **56.4s** |
+| backpressure, untuned kernel buffers | 31.5s, growing | throttled | 53.8s |
+| discard, untuned kernel buffers | 24.4s, growing | full speed | 28.0s |
+| **backpressure + tuning (new default)** | **~2.5s, bounded** | throttled (lossless) | **3.1s** |
+| **discard + tuning** | **~1.2s, bounded** | **full speed** | **2.1s** |
 
-## Interpretation
+The untuned rows show why the kernel tuning is essential: with the default
+autotuned TCP send buffer, megabytes of stale output pile up in the kernel
+where the WriteBuffer can neither gate nor drop them, and both modes are
+barely better than trunk. With `TCP_NOTSENT_LOWAT`, display lag stops growing
+entirely: it is bounded by the small fixed pipeline (WriteBuffer + unsent
+bytes + link queue) instead of scaling with how long the link has been
+saturated.
 
-### Display lag grows at ~1s/s in all three modes
+### 60s disconnect at t=30s (tuned)
 
-All three modes show display lag growing linearly at approximately 1 second of
-lag per second of wall time. After 30 seconds, the terminal is showing data that
-is ~29 seconds old.
+| scenario | process during disconnect | after reconnect | Ctrl-C |
+|---|---|---|---|
+| discard | **full speed, never stalls** | fresh output in <5s, no stale replay | 2.1s |
+| backpressure | stalls (lossless contract, same as trunk/ssh) | resumes, display recovers in <5s | 2.6s |
 
-This is expected and unavoidable given the test setup. The proxy limits
-server-to-client throughput to 100KB/s, but the workload produces ~2.7MB/s. The
-excess data queues in the TCP kernel send buffer on the server side. TCP is
-an ordered, reliable stream — data that has entered the kernel buffer cannot be
-"skipped" or "un-sent." It must be delivered in order, at whatever rate the
-proxy allows.
+etserver stayed alive through all scenarios.
 
-Since all three modes send data into the same TCP socket (with the same kernel
-buffer size), the display lag is nearly identical. **Display lag is a property
-of the network bottleneck, not of ET's flow control.** No amount of
-application-level buffering can reduce it once data is in the kernel.
+### Bulk throughput (localhost, no throttle, 30MB through the full pipeline)
 
-### Process lag is where the modes differ
+| build | throughput (avg of 3) |
+|---|---|
+| trunk | ~42.7 MB/s |
+| tuned, backpressure | ~33.6 MB/s |
 
-The critical difference is in **process_lag** — whether `print_timestamps.py`
-is running freely or frozen:
+The small kernel queues cost ~20% of bulk throughput on a localhost-class
+link (more syscalls per byte; the pipeline stalls briefly between refills).
+33 MB/s remains far beyond any realistic terminal workload, and on real WAN
+links throughput is BDP-bound, which `TCP_NOTSENT_LOWAT` does not restrict.
 
-**Trunk (no flow control)**: The server reads from the PTY and immediately calls
-`writePacket()`. When the TCP send buffer fills, `writePacket()` blocks. While
-blocked, the server cannot read from the PTY. The PTY's 4KB kernel buffer fills
-up. `print_timestamps.py`'s `write()` call blocks. The process stalls.
+## Why the defaults are what they are
 
-At t=10s, process_lag = 1.0s (STALLED). The process is running about 1 second
-behind real time — it is intermittently blocking on stdout writes. At t=20s and
-t=30s, the process recovers somewhat (0.7s, 0.0s) as the TCP buffer drain rate
-and the PTY production rate reach an equilibrium. But the process was stalled,
-and on a real network with variable latency, these stalls would be unpredictable
-and potentially much longer.
+Backpressure is the default because it preserves today's semantics: nothing
+is ever dropped, and a slow client pauses the producer, exactly like plain
+ssh over a slow link. Current users (including `tmux -CC` users, for whom
+dropped bytes mean state corruption) are strictly better off: same
+guarantees, but Ctrl-C now takes ~3s instead of ~56s. The proto default also
+governs what servers assume for old clients that don't send the field, so it
+must be the lossless mode.
 
-**Backpressure mode**: The server uses a 256KB WriteBuffer between the PTY read
-and the TCP socket write. This absorbs short bursts of data, but when the buffer
-fills, the server stops reading from the PTY — same stalling behavior as trunk,
-just deferred by 256KB. At t=10s, process_lag = 2.0s (STALLED) — actually worse
-than trunk because the 256KB buffer takes time to fill before backpressure kicks
-in, during which more data queues up.
-
-The advantage of backpressure mode over trunk: **all data is preserved.** Nothing
-is lost. The process runs slower, but every byte it writes eventually reaches the
-client. This matters for applications where output correctness is critical (e.g.,
-`tmux -CC` control mode, where dropped bytes would corrupt the client's state).
-
-**Discard mode**: The server uses a 256KB WriteBuffer, but instead of blocking
-when full, it drops the oldest data and keeps reading from the PTY. The PTY
-buffer never fills up. `print_timestamps.py` never blocks.
-
-At t=10s, t=20s, and t=30s: process_lag = 0.0s. The process runs at full speed
-the entire time. It has no idea the downstream is slow. This is exactly the
-behavior you want for a long-running job (ML training, builds, data processing)
-that should keep making progress regardless of terminal speed.
-
-The trade-off: old output is lost. If you scroll up in the terminal after the
-network catches up, some output will be missing. For most interactive use cases,
-this is acceptable — you care about what's happening *now*, not what happened
-30 seconds ago.
-
-### Server stability
-
-In the trunk codebase, etserver crashes with `EINVAL` from `select()` when the
-client disconnects during a write drain loop. The `waitOnSocketWritable()` helper
-calls `FD_SET` on a closed fd, which `select()` rejects. This crash was fixed in
-the test harness commit by handling `EBADF` and `EINVAL` the same way as `EINTR`
-(return false, let the caller stop draining).
-
-Both backpressure and discard modes inherit this fix and survive client
-disconnection.
+Discard is opt-in for users who prefer freshness over completeness — the
+`cat /dev/zero | base64` case from the issue, ML training jobs, builds:
+the process never stalls (even fully disconnected) and the display tracks
+real time. The cost is that saturated-link output is missing from scrollback.
 
 ## What this means for real-world use
 
-### Scenario: ML training job
-
-You start a training job inside ET, then close your laptop. With trunk or
-backpressure mode, the training job freezes once the PTY buffer fills (~4KB of
-output). It stays frozen until you reconnect. With discard mode, the training
-job keeps running. When you reconnect, you see recent output — the hours of
-intermediate output were discarded, which is fine because you only care about
-current loss values.
-
-### Scenario: Build output
-
-You kick off a large build that produces megabytes of compiler output. Your
-wifi drops. With backpressure mode, the build pauses within seconds. With
-discard mode, the build continues unimpeded.
-
-### Scenario: tmux -CC
-
-You use ET with tmux in control mode. Here, every byte matters — tmux's client
-state must stay in sync with the server. Discard mode would cause state
-corruption. Use backpressure mode, which guarantees all data is delivered.
+- **ML training / long build, laptop closed**: with backpressure (default),
+  the job pauses when buffers fill — same as today. With `--flow-control
+  discard`, the job keeps running at full speed and you see current output
+  when you reconnect.
+- **`cat` a huge file over a slow link, then Ctrl-C**: prompt returns in ~2-3s
+  in both modes (was: up to a minute).
+- **tmux -CC**: keep the default. Every byte is delivered.
 
 ## Reproducing These Results
 
 ```bash
-# Build
 cd /path/to/EternalTerminal/build
 cmake -DDISABLE_VCPKG=ON -GNinja .. && ninja -j4
 
-# Record all three scenarios as asciinema .cast files
-bash test/e2e/record_all.sh test/e2e/recordings/
+# One scenario (trunk|backpressure|discard) [--disconnect]
+bash test/e2e/do_scenario.sh discard --outdir /tmp/et_e2e
+bash test/e2e/do_scenario.sh discard --disconnect --outdir /tmp/et_e2e
 
-# Play a recording
-asciinema play test/e2e/recordings/discard.cast
-
-# Or run one scenario interactively
-bash test/e2e/do_scenario.sh discard
+# Bulk throughput on a fast link
+bash test/e2e/throughput_test.sh
+bash test/e2e/throughput_test.sh --flow-control discard
 ```
 
 See `test/e2e/README.md` for manual setup and `test/e2e/throttle_proxy.py` for
