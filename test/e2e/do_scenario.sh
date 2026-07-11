@@ -69,6 +69,12 @@ case "$MODE" in
         git checkout f8930e169 -- src/terminal/TerminalClientMain.cpp src/terminal/TerminalMain.cpp src/base/Headers.hpp 2>/dev/null
         rm -f src/base/WriteBuffer.hpp test/unit_tests/WriteBufferTest.cpp
         ;;
+    none)
+        echo -e "${C}=== Scenario: none (HEAD, no --flow-control: must match trunk) ===${N}"
+        COMMIT_DESC="HEAD ($(cd "$REPO" && git rev-parse --short HEAD)), no flag"
+        ET_CMD="./et --idpasskey=ID/KEY 127.0.0.1:4445"
+        # Use HEAD as-is (no checkout needed)
+        ;;
     backpressure)
         echo -e "${C}=== Scenario: backpressure ===${N}"
         COMMIT_DESC="HEAD ($(cd "$REPO" && git rev-parse --short HEAD))"
@@ -81,7 +87,7 @@ case "$MODE" in
         ET_CMD="./et --idpasskey=ID/KEY --flow-control discard 127.0.0.1:4445"
         # Use HEAD as-is (no checkout needed)
         ;;
-    *) echo "Usage: $0 <trunk|backpressure|discard> [--disconnect]"; exit 1 ;;
+    *) echo "Usage: $0 <trunk|none|backpressure|discard> [--disconnect]"; exit 1 ;;
 esac
 FC_FLAG=""
 [ "$MODE" = "backpressure" ] && FC_FLAG="--flow-control backpressure"
