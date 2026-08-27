@@ -1,5 +1,7 @@
 #include "TerminalClient.hpp"
 
+#include <cstdint>
+
 #include "TelemetryService.hpp"
 #include "TunnelUtils.hpp"
 #include "WriteBuffer.hpp"
@@ -193,6 +195,13 @@ void TerminalClient::run(const string& command, const bool noexit) {
     CLOG(INFO, "stdout") << "ET running, feel free to background..." << endl;
   }
 
+  // Launchers such as nohup(1) replace stdout with a regular file while
+  // leaving the tty on stdin, so the descriptor Console exposes for input is
+  // readable-but-empty (or not readable at all). select() always reports it
+  // ready and every read yields EOF/EBADF, which must not be mistaken for the
+  // user closing an interactive session -- doing so would tear down a
+  // backgrounded client and its port forwards immediately.
+  bool consoleInputDisabled = false;
   while (!connection->isShuttingDown()) {
     {
       lock_guard<recursive_mutex> guard(shutdownMutex);
@@ -208,7 +217,7 @@ void TerminalClient::run(const string& command, const bool noexit) {
     FD_ZERO(&rfd);
     int maxfd = -1;
     int consoleFd = -1;
-    if (console) {
+    if (console && !consoleInputDisabled) {
       consoleFd = console->getFd();
       maxfd = consoleFd;
       FD_SET(consoleFd, &rfd);
@@ -252,7 +261,7 @@ void TerminalClient::run(const string& command, const bool noexit) {
         }
       }
 
-      if (console) {
+      if (console && consoleFd >= 0) {
         // Check for data to send.
         if (FD_ISSET(consoleFd, &rfd)) {
           // Read from stdin and write to our client that will then send it to
@@ -300,11 +309,21 @@ void TerminalClient::run(const string& command, const bool noexit) {
                   TerminalPacketType::TERMINAL_BUFFER, protoToString(tb)));
               keepaliveTime = time(NULL) + keepaliveDuration;
             } else if (rc == 0) {
-              LOG(INFO) << "Console EOF";
-              break;
+              if (isatty(consoleFd)) {
+                LOG(INFO) << "Console EOF";
+                break;
+              }
+              LOG(INFO) << "Console is not a tty and is at EOF, disabling "
+                           "console input";
+              consoleInputDisabled = true;
             } else {
               if (savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) {
                 // Transient error, retry
+              } else if (!isatty(consoleFd)) {
+                LOG(INFO) << "Console is not a tty and cannot be read ("
+                          << savedErrno << "): " << strerror(savedErrno)
+                          << ", disabling console input";
+                consoleInputDisabled = true;
               } else {
                 LOG(INFO) << "Console read error: (" << savedErrno
                           << "): " << strerror(savedErrno);
