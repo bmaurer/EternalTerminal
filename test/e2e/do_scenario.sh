@@ -31,13 +31,57 @@ KEY="E2ETestKey123456789012345678901A"
 SIDECAR="/tmp/et_e2e_sidecar_$$.txt"
 ETMUX="/tmp/et_e2e_client_$$.sock"
 PROXY_LOG="/tmp/et_e2e_proxy_$$.log"
+FIFO="/tmp/et_e2e_demo_$$.fifo"
+ETSERVER_PID=""
+PROXY_PID=""
+ETTERMINAL_PID=""
+
+# The scenario uses fixed local ports. Never reclaim them by killing an
+# existing listener: it may belong to another test or a real service.
+require_free_port() {
+    local port="$1"
+    if ! python3 - "$port" <<'PY'
+import errno
+import socket
+import sys
+
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+try:
+    sock.bind(("::", port))
+except OSError as exc:
+    if exc.errno == errno.EADDRINUSE:
+        sys.exit(1)
+    raise
+finally:
+    sock.close()
+PY
+    then
+        echo "ERROR: TCP port $port is already in use; refusing to stop an unrelated process." >&2
+        exit 1
+    fi
+}
+
+stop_child() {
+    local pid="${1:-}"
+    [ -n "$pid" ] || return
+    if jobs -pr | grep -Fxq "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    fi
+}
+
+require_free_port 4444
+require_free_port 4445
 
 # The cleanup trap restores src/, proto/, and test dirs to HEAD (the trunk
 # scenario checks out old sources there). Any uncommitted work in those
 # paths would be silently destroyed, so refuse to run on a dirty tree.
-if ! git -C "$REPO" diff --quiet -- src/ proto/ test/integration_tests/ test/unit_tests/ 2>/dev/null; then
-    echo "ERROR: uncommitted changes under src/, proto/, or test/. Commit them first:"
-    git -C "$REPO" status --short -- src/ proto/ test/integration_tests/ test/unit_tests/ | head
+if ! git -C "$REPO" diff --quiet -- src/ proto/ test/integration_tests/ test/unit_tests/ test/e2e/do_scenario.sh test/e2e/run_all_scenarios.sh 2>/dev/null ||
+   ! git -C "$REPO" diff --cached --quiet -- src/ proto/ test/integration_tests/ test/unit_tests/ test/e2e/do_scenario.sh test/e2e/run_all_scenarios.sh 2>/dev/null; then
+    echo "ERROR: uncommitted changes under paths restored by this harness. Commit them first:"
+    git -C "$REPO" status --short -- src/ proto/ test/integration_tests/ test/unit_tests/ test/e2e/do_scenario.sh test/e2e/run_all_scenarios.sh | head
     exit 1
 fi
 
@@ -52,10 +96,10 @@ C='\033[1;36m'; G='\033[1;32m'; R='\033[1;31m'; Y='\033[33m'; N='\033[0m'
 
 cleanup() {
     tmux -S "$ETMUX" kill-server 2>/dev/null
-    kill $ETSERVER_PID $PROXY_PID 2>/dev/null
-    kill -9 $(lsof -t -i:4444 2>/dev/null) $(lsof -t -i:4445 2>/dev/null) 2>/dev/null
-    pkill -9 -f "etterminal.*$ID" 2>/dev/null
-    rm -f /tmp/et_e2e_demo.fifo "$ETMUX" "$SIDECAR" "$PROXY_LOG"
+    stop_child "$ETSERVER_PID"
+    stop_child "$PROXY_PID"
+    stop_child "$ETTERMINAL_PID"
+    rm -f "$FIFO" "$ETMUX" "$SIDECAR" "$PROXY_LOG"
     # Restore only the dirs the trunk scenario checks out. Do NOT use
     # "git checkout HEAD -- ." here: it clobbers unrelated uncommitted work
     # in the tree (this exact mistake once reverted the flow-control
@@ -117,9 +161,9 @@ echo ""
 # --- Start services ---
 
 echo -e "${C}--- Services ---${N}"
-rm -f /tmp/et_e2e_demo.fifo
+rm -f "$FIFO"
 
-"$BUILD/etserver" --serverfifo=/tmp/et_e2e_demo.fifo --port=4444 --logdir="$OUTDIR" &>/dev/null &
+"$BUILD/etserver" --serverfifo="$FIFO" --port=4444 --logdir="$OUTDIR" &>/dev/null &
 ETSERVER_PID=$!
 sleep 3
 
@@ -127,12 +171,14 @@ PYTHONUNBUFFERED=1 python3 -u "$DIR/throttle_proxy.py" 4445 4444 "$RATE" >"$PROX
 PROXY_PID=$!
 sleep 2
 
-"$BUILD/etterminal" --idpasskey="$ID/$KEY" --serverfifo=/tmp/et_e2e_demo.fifo --logdir="$OUTDIR" &>/dev/null &
+"$BUILD/etterminal" --idpasskey="$ID/$KEY" --serverfifo="$FIFO" --logdir="$OUTDIR" &>/dev/null &
+ETTERMINAL_PID=$!
 sleep 3
 
 for i in $(seq 1 15); do
-    ES=$(lsof -i:4444 2>/dev/null | grep -c LISTEN)
-    PX=$(lsof -i:4445 2>/dev/null | grep -c LISTEN)
+    ES=0; PX=0
+    kill -0 "$ETSERVER_PID" 2>/dev/null && ES=1
+    kill -0 "$PROXY_PID" 2>/dev/null && PX=1
     [ "$ES" -ge 1 ] && [ "$PX" -ge 1 ] && break
     sleep 1
 done
@@ -256,7 +302,8 @@ fi
 echo "{\"event\":\"ctrl_c\",\"latency\":$CTRL_C_LATENCY}" >> "$JSONL"
 
 echo ""
-ES_ALIVE=$(lsof -i:4444 2>/dev/null | grep -c LISTEN)
+ES_ALIVE=0
+kill -0 "$ETSERVER_PID" 2>/dev/null && ES_ALIVE=1
 [ "$ES_ALIVE" -gt 0 ] && echo -e "etserver: ${G}alive${N}" || echo -e "etserver: ${R}CRASHED${N}"
 
 cp "$PROXY_LOG" "$OUTDIR/${SCENARIO}_proxy.log" 2>/dev/null

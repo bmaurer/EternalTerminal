@@ -24,20 +24,60 @@ ID="TPT$(date +%s | tail -c 8)"
 KEY="E2ETestKey123456789012345678901A"
 ETMUX="/tmp/et_tpt_client_$$.sock"
 FIFO="/tmp/et_tpt_$$.fifo"
+ETSERVER_PID=""
+ETTERMINAL_PID=""
+
+# The test uses a fixed local port. Never reclaim it by killing an existing
+# listener: it may belong to another test or a real service.
+require_free_port() {
+    local port="$1"
+    if ! python3 - "$port" <<'PY'
+import errno
+import socket
+import sys
+
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+try:
+    sock.bind(("::", port))
+except OSError as exc:
+    if exc.errno == errno.EADDRINUSE:
+        sys.exit(1)
+    raise
+finally:
+    sock.close()
+PY
+    then
+        echo "ERROR: TCP port $port is already in use; refusing to stop an unrelated process." >&2
+        exit 1
+    fi
+}
+
+stop_child() {
+    local pid="${1:-}"
+    [ -n "$pid" ] || return
+    if jobs -pr | grep -Fxq "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    fi
+}
 
 cleanup() {
     tmux -S "$ETMUX" kill-server 2>/dev/null
-    kill $ETSERVER_PID 2>/dev/null
-    kill -9 $(lsof -t -i:$PORT 2>/dev/null) 2>/dev/null
-    pkill -9 -f "etterminal.*$ID" 2>/dev/null
+    stop_child "$ETSERVER_PID"
+    stop_child "$ETTERMINAL_PID"
     rm -f "$FIFO" "$ETMUX"
 }
 trap cleanup EXIT
+
+require_free_port "$PORT"
 
 "$BUILD/etserver" --serverfifo="$FIFO" --port=$PORT --logdir=/tmp &>/dev/null &
 ETSERVER_PID=$!
 sleep 2
 "$BUILD/etterminal" --idpasskey="$ID/$KEY" --serverfifo="$FIFO" --logdir=/tmp &>/dev/null &
+ETTERMINAL_PID=$!
 sleep 2
 
 tmux -S "$ETMUX" new-session -d -s et -x 200 -y 50
