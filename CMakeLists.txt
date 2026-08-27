@@ -154,7 +154,7 @@ else()
   find_package(httplib CONFIG REQUIRED)
   find_package(cxxopts CONFIG REQUIRED)
   find_package(nlohmann_json CONFIG REQUIRED)
-  find_path(SIMPLEINI_INCLUDE_DIRS "ConvertUTF.c")
+  find_path(SIMPLEINI_INCLUDE_DIRS "SimpleIni.h")
 endif()
 
 # Optional packages
@@ -233,8 +233,9 @@ IF(WIN32)
 ENDIF(WIN32)
 
 if(CODE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g --coverage")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g --coverage")
+  # CODE_COVERAGE define lets forked children flush gcov before _exit.
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g --coverage -DCODE_COVERAGE")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g --coverage -DCODE_COVERAGE")
 endif(CODE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 
 if(DISABLE_CRASH_LOG)
@@ -248,9 +249,15 @@ if(UNIX)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -ggdb3")
 endif()
 
-# Enable C++-17
-set(CMAKE_CXX_STANDARD 17)
+# Enable C++20
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(APPLE OR FREEBSD)
+  # The bundled ThreadPool submodule still uses std::result_of. libc++ hides that
+  # C++17 type trait in C++20 unless this compatibility switch is enabled.
+  add_compile_definitions(_LIBCPP_ENABLE_CXX20_REMOVED_TYPE_TRAITS)
+endif()
 
 # Enable compile commands export for vscode
 add_definitions(-DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
@@ -314,7 +321,9 @@ elseif(WIN32)
   set(CORE_LIBRARIES OpenSSL::SSL ZLIB::ZLIB Ws2_32 Shlwapi
     dbghelp)
 elseif(APPLE)
-  set(CORE_LIBRARIES OpenSSL::SSL ZLIB::ZLIB util resolv)
+  find_library(SECURITY_FRAMEWORK Security REQUIRED)
+  set(CORE_LIBRARIES OpenSSL::SSL ZLIB::ZLIB util resolv
+    ${SECURITY_FRAMEWORK})
 else()
   set(CORE_LIBRARIES
     httplib::httplib
@@ -326,8 +335,16 @@ else()
     util
     resolv
     atomic
-    stdc++fs
   )
+  # stdc++fs was a separate library for <filesystem> in GCC 8 and earlier.
+  # Starting with GCC 9, filesystem support is part of libstdc++ proper, and
+  # the separate -lstdc++fs was removed entirely in GCC 15.
+  # Only link it if the compiler still ships it.
+  include(CheckLibraryExists)
+  check_library_exists(stdc++fs "" "" HAVE_STDCXXFS)
+  if(HAVE_STDCXXFS)
+    list(APPEND CORE_LIBRARIES stdc++fs)
+  endif()
 endif()
 
 IF(Unwind_FOUND)
@@ -414,6 +431,8 @@ add_library(
   src/base/SocketHandler.cpp
   src/base/PipeSocketHandler.hpp
   src/base/PipeSocketHandler.cpp
+  src/base/UserSocketOps.hpp
+  src/base/UserSocketOps.cpp
   src/base/TcpSocketHandler.hpp
   src/base/TcpSocketHandler.cpp
   src/base/UnixSocketHandler.hpp

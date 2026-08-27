@@ -36,7 +36,9 @@ bash test/e2e/run_e2e_test.sh discard 100000
 ```
 
 The script starts etserver (port 4444), a throttle proxy (port 4445 -> 4444 at
-100KB/s), etterminal, and the et client in a tmux session. It then runs
+100KB/s), etterminal, and the et client in a tmux session. It refuses to start
+if either fixed port is already in use and cleanup only terminates processes
+started by that invocation. It then runs
 `print_timestamps.py` and measures:
 
 - **display_lag**: how far behind the timestamps on screen are from real time
@@ -137,5 +139,6 @@ crontab -r
 - **etserver crashes with EINVAL**: Fixed by handling EBADF/EINVAL in
   `waitOnSocketWritable()` (see Headers.hpp). The fd becomes invalid when the
   client disconnects mid-drain.
-- **"Connection refused" on proxy**: The proxy process died. Check if port 4445
-  is already in use (`lsof -i:4445`).
+- **"TCP port ... is already in use"**: Another process owns one of the fixed
+  test ports. Stop that process yourself or run the test later; the harness
+  intentionally never kills an existing listener.

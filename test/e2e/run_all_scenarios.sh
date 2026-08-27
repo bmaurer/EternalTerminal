@@ -24,10 +24,6 @@ echo "Output: $OUTDIR"
 echo "Started: $(date)"
 echo ""
 
-kill -9 $(lsof -t -i:4444 2>/dev/null) $(lsof -t -i:4445 2>/dev/null) 2>/dev/null || true
-pkill -9 -f throttle_proxy 2>/dev/null || true
-sleep 2
-
 for SCENARIO in "trunk" "backpressure" "discard" "discard --disconnect"; do
     MODE=$(echo "$SCENARIO" | awk '{print $1}')
     EXTRA=$(echo "$SCENARIO" | awk '{$1=""; print $0}' | xargs)
@@ -35,15 +31,11 @@ for SCENARIO in "trunk" "backpressure" "discard" "discard --disconnect"; do
     echo "  Scenario: $MODE $EXTRA"
     echo "================================================================"
 
-    kill -9 $(lsof -t -i:4444 2>/dev/null) $(lsof -t -i:4445 2>/dev/null) 2>/dev/null || true
-    pkill -9 -f throttle_proxy 2>/dev/null || true
-    sleep 3
-
     bash "$DIR/do_scenario.sh" $SCENARIO --outdir "$OUTDIR"
     echo ""
 done
 
-cd "$REPO" && git checkout HEAD -- . 2>/dev/null
+cd "$REPO" && git checkout HEAD -- src/ proto/ test/integration_tests/ test/unit_tests/ 2>/dev/null
 cd build && cmake -DDISABLE_VCPKG=ON -GNinja .. 2>&1 | tail -1 && ninja -j4 2>&1 | tail -1
 
 echo "================================================================"

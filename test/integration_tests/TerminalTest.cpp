@@ -24,6 +24,18 @@
 
 namespace et {
 
+void waitForFakeConsoleSetup(const shared_ptr<FakeConsole>& fakeConsole) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (fakeConsole->isSetup()) {
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  REQUIRE(fakeConsole->isSetup());
+}
+
 void readWriteTest(shared_ptr<PipeSocketHandler> routerSocketHandler,
                    shared_ptr<FakeUserTerminal> fakeUserTerminal,
                    SocketEndpoint serverEndpoint,
@@ -55,6 +67,7 @@ void readWriteTest(shared_ptr<PipeSocketHandler> routerSocketHandler,
   thread terminalClientThread(
       [terminalClient]() { terminalClient->run("", false); });
   sleep(3);
+  waitForFakeConsoleSetup(fakeConsole);
 
   string s(1024, '\0');
   for (int a = 0; a < 1024; a++) {
@@ -181,6 +194,7 @@ void largeInputNoDeadlockTest(shared_ptr<PipeSocketHandler> routerSocketHandler,
   thread terminalClientThread(
       [terminalClient]() { terminalClient->run("", false); });
   sleep(3);
+  waitForFakeConsoleSetup(fakeConsole);
 
   // Before the bulk test, confirm the full client -> pty(`cat`) -> client echo
   // pipe is actually live, and drain anything the connection produced during
@@ -255,6 +269,138 @@ void largeInputNoDeadlockTest(shared_ptr<PipeSocketHandler> routerSocketHandler,
     typeThread.detach();
     readThread.detach();
   }
+
+  terminalClient->shutdown();
+  terminalClientThread.join();
+  terminalClient.reset();
+
+  uth->shutdown();
+  uthThread.join();
+  uth.reset();
+}
+
+// A Console whose descriptor is a regular file opened read/write, reproducing
+// what nohup(1) hands a backgrounded client: output lands in the file, and
+// reads of the same descriptor always return EOF.
+class FileBackedConsole : public Console {
+ public:
+  FileBackedConsole() : fd(-1) {
+    string tmpPath = GetTempDirectory() + string("et_test_nohup_XXXXXXXX");
+    directory = string(mkdtemp(&tmpPath[0]));
+    path = directory + "/nohup.out";
+    fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0600);
+    FATAL_FAIL(fd);
+  }
+
+  virtual ~FileBackedConsole() {}
+
+  virtual void setup() {}
+
+  virtual void teardown() {
+    if (fd >= 0) {
+      ::close(fd);
+      fd = -1;
+    }
+    ::remove(path.c_str());
+    ::remove(directory.c_str());
+  }
+
+  virtual TerminalInfo getTerminalInfo() {
+    TerminalInfo ti;
+    ti.set_row(24);
+    ti.set_column(80);
+    ti.set_width(640);
+    ti.set_height(480);
+    return ti;
+  }
+
+  virtual int getFd() { return fd; }
+
+  string readBackContents() {
+    string contents;
+    int readFd = ::open(path.c_str(), O_RDONLY);
+    if (readFd < 0) {
+      return contents;
+    }
+    char buf[4096];
+    int rc;
+    while ((rc = ::read(readFd, buf, sizeof(buf))) > 0) {
+      contents.append(buf, rc);
+    }
+    ::close(readFd);
+    return contents;
+  }
+
+ protected:
+  int fd;
+  string directory;
+  string path;
+};
+
+// A client whose console descriptor is not a tty must keep running: it can no
+// longer accept keyboard input, but the session and its port forwards have to
+// survive so a backgrounded client is not torn down the moment the first
+// console read returns EOF.  Console::getFd() is STDOUT_FILENO, so any
+// launcher that points stdout at something other than the tty -- nohup(1), a
+// shell redirect, a service manager -- lands here.
+void nonTtyConsoleKeepsSessionAliveTest(
+    shared_ptr<PipeSocketHandler> routerSocketHandler,
+    shared_ptr<FakeUserTerminal> fakeUserTerminal,
+    SocketEndpoint serverEndpoint,
+    shared_ptr<SocketHandler> clientSocketHandler,
+    shared_ptr<SocketHandler> clientPipeSocketHandler,
+    const SocketEndpoint& routerEndpoint) {
+  auto fakeSubprocessUtils = make_shared<FakeSubprocessUtils>();
+  auto sshSetupHandler = make_shared<FakeSshSetupHandler>(fakeSubprocessUtils);
+  auto [id, passkey] = sshSetupHandler->SetupSsh(
+      "", "localhost", "localhost", 2022, "", "", false, 0, "", "", {});
+
+  auto uth = shared_ptr<UserTerminalHandler>(
+      new UserTerminalHandler(routerSocketHandler, fakeUserTerminal, true,
+                              routerEndpoint, id + "/" + passkey));
+  thread uthThread([uth]() { uth->run(); });
+  sleep(1);
+
+  auto fileConsole = make_shared<FileBackedConsole>();
+  shared_ptr<TerminalClient> terminalClient(
+      new TerminalClient(clientSocketHandler, clientPipeSocketHandler,
+                         serverEndpoint, id, passkey, fileConsole, false, "",
+                         "", false, "", MAX_CLIENT_KEEP_ALIVE_DURATION, {}));
+
+  std::atomic<bool> runReturned(false);
+  thread terminalClientThread([terminalClient, &runReturned]() {
+    terminalClient->run("", false);
+    runReturned = true;
+  });
+  sleep(3);
+
+  // Pre-fix, the first console read returned EOF and run() exited within
+  // milliseconds of the connection coming up.
+  REQUIRE(!runReturned.load());
+
+  // The session is not merely alive, it is still usable: remote output has to
+  // reach the same descriptor.
+  const string remoteOutput = "ET_NOHUP_OUTPUT_MARKER";
+  fakeUserTerminal->simulateTerminalResponse(remoteOutput);
+
+  std::promise<bool> sawOutputPromise;
+  auto sawOutputFuture = sawOutputPromise.get_future();
+  thread readThread([&sawOutputPromise, fileConsole, remoteOutput]() {
+    while (fileConsole->readBackContents().find(remoteOutput) == string::npos) {
+      ::usleep(100 * 1000);
+    }
+    sawOutputPromise.set_value(true);
+  });
+  bool sawOutput = sawOutputFuture.wait_for(std::chrono::seconds(30)) ==
+                   std::future_status::ready;
+  REQUIRE(sawOutput);
+  if (sawOutput) {
+    readThread.join();
+  } else {
+    readThread.detach();
+  }
+
+  REQUIRE(!runReturned.load());
 
   terminalClient->shutdown();
   terminalClientThread.join();
@@ -430,6 +576,13 @@ TEST_CASE_METHOD(EndToEndTestFixture, "LargeInputNoDeadlock",
   largeInputNoDeadlockTest(routerSocketHandler, serverEndpoint,
                            clientSocketHandler, clientPipeSocketHandler,
                            fakeConsole, routerEndpoint);
+}
+
+TEST_CASE_METHOD(EndToEndTestFixture, "NonTtyConsoleKeepsSessionAlive",
+                 "[EndToEndTest][integration]") {
+  nonTtyConsoleKeepsSessionAliveTest(routerSocketHandler, fakeUserTerminal,
+                                     serverEndpoint, clientSocketHandler,
+                                     clientPipeSocketHandler, routerEndpoint);
 }
 
 void simultaneousTerminalConnectionTest(

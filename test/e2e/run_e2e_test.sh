@@ -16,33 +16,75 @@ FIFO="/tmp/et_e2e_$$.fifo"
 ID="E2E$(date +%s)"
 KEY="E2ETestKey123456789012345678901A"
 SIDECAR="/tmp/et_e2e_sidecar_$$.txt"
+PROXY_LOG="/tmp/et_e2e_proxy_$$.log"
+ETSERVER_PID=""
+PROXY_PID=""
+ETTERMINAL_PID=""
+
+# The test uses fixed local ports. Never reclaim them by killing an existing
+# listener: it may belong to another test or a real service.
+require_free_port() {
+    local port="$1"
+    if ! python3 - "$port" <<'PY'
+import errno
+import socket
+import sys
+
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+try:
+    sock.bind(("::", port))
+except OSError as exc:
+    if exc.errno == errno.EADDRINUSE:
+        sys.exit(1)
+    raise
+finally:
+    sock.close()
+PY
+    then
+        echo "ERROR: TCP port $port is already in use; refusing to stop an unrelated process." >&2
+        exit 1
+    fi
+}
+
+stop_child() {
+    local pid="${1:-}"
+    [ -n "$pid" ] || return
+    if jobs -pr | grep -Fxq "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    fi
+}
 
 cleanup() {
     tmux -S "$SOCK" kill-server 2>/dev/null || true
-    kill -9 $(lsof -t -i:4444 2>/dev/null) 2>/dev/null || true
-    kill -9 $(lsof -t -i:4445 2>/dev/null) 2>/dev/null || true
-    pkill -9 -f "etterminal.*$ID" 2>/dev/null || true
-    rm -f "$FIFO" "$SOCK" "$SIDECAR" || true
+    stop_child "$ETSERVER_PID"
+    stop_child "$PROXY_PID"
+    stop_child "$ETTERMINAL_PID"
+    rm -f "$FIFO" "$SOCK" "$SIDECAR" "$PROXY_LOG" || true
 }
 trap cleanup EXIT
-cleanup 2>/dev/null
+
+require_free_port 4444
+require_free_port 4445
 
 # Start services
 tmux -S "$SOCK" new-session -d -s t -x 200 -y 50
-tmux -S "$SOCK" send-keys "$BUILD/etserver --serverfifo=$FIFO --port=4444" Enter
+"$BUILD/etserver" --serverfifo="$FIFO" --port=4444 &>/dev/null &
+ETSERVER_PID=$!
 sleep 5
-tmux -S "$SOCK" split-window -v
-sleep 1
-tmux -S "$SOCK" send-keys "python3 $DIR/throttle_proxy.py 4445 4444 $RATE" Enter
+python3 "$DIR/throttle_proxy.py" 4445 4444 "$RATE" >"$PROXY_LOG" 2>&1 &
+PROXY_PID=$!
 sleep 3
-tmux -S "$SOCK" split-window -v
-sleep 1
-tmux -S "$SOCK" send-keys "$BUILD/etterminal --idpasskey='$ID/$KEY' --serverfifo=$FIFO" Enter
+"$BUILD/etterminal" --idpasskey="$ID/$KEY" --serverfifo="$FIFO" &>/dev/null &
+ETTERMINAL_PID=$!
 sleep 5
 
 # Verify
-ES=$(lsof -i:4444 2>/dev/null | grep -c LISTEN)
-PX=$(lsof -i:4445 2>/dev/null | grep -c LISTEN)
+ES=0; PX=0
+kill -0 "$ETSERVER_PID" 2>/dev/null && ES=1
+kill -0 "$PROXY_PID" 2>/dev/null && PX=1
 if [ "$ES" -lt 1 ] || [ "$PX" -lt 1 ]; then
     echo "FAILED: etserver=$ES proxy=$PX"
     exit 1
@@ -58,7 +100,7 @@ tmux -S "$SOCK" send-keys -t t:et "$BUILD/et --idpasskey='$ID/$KEY' 127.0.0.1:44
 sleep 10
 
 # Verify proxy connection
-PROXY_OUT=$(tmux -S "$SOCK" capture-pane -t t:0.1 -p)
+PROXY_OUT=$(cat "$PROXY_LOG" 2>/dev/null)
 if ! echo "$PROXY_OUT" | grep -q connect; then
     echo "FAILED: proxy saw no connection"
     echo "$PROXY_OUT" | tail -5
@@ -98,5 +140,5 @@ done
 
 echo ""
 echo "Proxy stats:"
-tmux -S "$SOCK" capture-pane -t t:0.1 -p | grep -E 'sent=|connect' | tail -3
-echo "etserver alive: $(lsof -i:4444 2>/dev/null | grep -c LISTEN)"
+grep -E 'sent=|connect' "$PROXY_LOG" 2>/dev/null | tail -3
+echo "etserver alive: $(kill -0 "$ETSERVER_PID" 2>/dev/null && echo 1 || echo 0)"

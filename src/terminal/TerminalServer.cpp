@@ -1,6 +1,8 @@
 #ifndef WIN32
 #include "TerminalServer.hpp"
 
+#include <cstdint>
+
 #include "TelemetryService.hpp"
 #include "WriteBuffer.hpp"
 
@@ -302,8 +304,8 @@ void TerminalServer::runTerminal(
   InitialResponse response;
   shared_ptr<SocketHandler> serverSocketHandler = getSocketHandler();
   shared_ptr<SocketHandler> pipeSocketHandler(new PipeSocketHandler());
-  shared_ptr<PortForwardHandler> portForwardHandler(
-      new PortForwardHandler(serverSocketHandler, pipeSocketHandler));
+  shared_ptr<PortForwardHandler> portForwardHandler(new PortForwardHandler(
+      serverSocketHandler, pipeSocketHandler, userInfo.uid(), userInfo.gid()));
   map<string, string> environmentVariables;
 
   for (const auto& envVar : payload.environmentvariables()) {
